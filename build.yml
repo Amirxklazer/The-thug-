@@ -1,0 +1,35 @@
+name: Build APK
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sort flat files into Android folders
+        run: |
+          python3 - <<'PY'
+          import os, shutil
+          for n in sorted(os.listdir('.')):
+              if os.path.isfile(n) and '@@' in n:
+                  d = n.replace('@@', '/')
+                  os.makedirs(os.path.dirname(d), exist_ok=True)
+                  shutil.move(n, d)
+          PY
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
