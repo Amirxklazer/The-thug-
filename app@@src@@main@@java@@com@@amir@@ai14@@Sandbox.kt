@@ -279,22 +279,36 @@ jobs:
         private val S = "string"
         private val I = "integer"
 
-        fun specs(): JSONArray = JSONArray()
-            .put(t("write_file", "Write a TEXT file (code, xml, json, html, svg, md, csv, yaml...). Creates folders automatically. YOU choose a clear descriptive file name.", "path" to S, "content" to S))
-            .put(t("write_base64", "Write a small BINARY file from base64 data.", "path" to S, "base64" to S))
-            .put(t("read_file", "Read a text file from the sandbox.", "path" to S))
-            .put(t("list_files", "List files in a sandbox folder (empty path = everything).", "path" to S, req = listOf()))
-            .put(t("delete_file", "Delete a file or folder.", "path" to S))
-            .put(t("zip_folder", "Zip a folder into any zip-based file: .zip .docx .xlsx .pptx .epub .jar", "folder" to S, "output" to S))
-            .put(t("flat_zip", "Pack an Android project folder into a FLAT zip (no folders at all: every file at the zip root, paths encoded with @@) plus a build.yml that sorts them back. ALWAYS use this for Android projects instead of zip_folder.", "folder" to S, "output" to S))
-            .put(t("unzip", "Extract a zip into a folder.", "path" to S, "dest" to S))
-            .put(t("render_html_to_image", "Render an .html or .svg file to a .png/.jpg/.webp image.", "html_path" to S, "output" to S, "width" to I, "height" to I, req = listOf("html_path", "output")))
-            .put(t("generate_image", "Generate a photo/art image with an image model and save it as .png/.jpg/.webp.", "prompt" to S, "output" to S))
-            .put(t("make_pdf", "Make a simple multi-page PDF from plain text.", "text" to S, "output" to S))
-            .put(t("run_python", "Run Python 3 code inside the sandbox folder (Pillow/PIL and numpy installed, no internet, no pip). Save images/files with relative paths. Returns printed output and errors.", "code" to S))
-            .put(t("web_search", "Search the web (current info, docs, library versions, news, anything). Returns top results with titles, URLs and snippets.", "query" to S))
-            .put(t("fetch_url", "Open a web page URL and read its text (docs, articles, GitHub readmes).", "url" to S))
-            .put(t("memory_save", "Save one durable fact about the user to memory.md.", "note" to S))
-            .put(t("memory_forget", "Remove memory lines containing this text.", "match" to S))
+        fun specs(web: Boolean = true, py: Boolean = true, img: Boolean = true, mem: Boolean = true): JSONArray {
+            val all = JSONArray()
+            all.put(t("write_file", "Write a TEXT file (code, xml, json, html, svg, md, csv, yaml...). Creates folders automatically. YOU choose a clear descriptive file name.", "path" to S, "content" to S))
+            all.put(t("write_base64", "Write a small BINARY file from base64 data.", "path" to S, "base64" to S))
+            all.put(t("read_file", "Read a text file from the sandbox.", "path" to S))
+            all.put(t("list_files", "List files in a sandbox folder (empty path = everything).", "path" to S, req = listOf()))
+            all.put(t("delete_file", "Delete a file or folder.", "path" to S))
+            all.put(t("zip_folder", "Zip a folder into any zip-based file: .zip .docx .xlsx .pptx .epub .jar", "folder" to S, "output" to S))
+            all.put(t("flat_zip", "Pack an Android project folder into a FLAT zip (no folders at all: every file at the zip root, paths encoded with @@) plus a build.yml that sorts them back. ALWAYS use this for Android projects instead of zip_folder.", "folder" to S, "output" to S))
+            all.put(t("unzip", "Extract a zip into a folder.", "path" to S, "dest" to S))
+            all.put(t("render_html_to_image", "Render an .html or .svg file to a .png/.jpg/.webp image.", "html_path" to S, "output" to S, "width" to I, "height" to I, req = listOf("html_path", "output")))
+            all.put(t("generate_image", "Generate a photo/art image with an image model and save it as .png/.jpg/.webp.", "prompt" to S, "output" to S))
+            all.put(t("make_pdf", "Make a simple multi-page PDF from plain text.", "text" to S, "output" to S))
+            all.put(t("run_python", "Run Python 3 code inside the sandbox folder (Pillow/PIL and numpy installed, no internet, no pip). Save images/files with relative paths. Returns printed output and errors.", "code" to S))
+            all.put(t("web_search", "Search the web (current info, docs, library versions, news, anything). Returns top results with titles, URLs and snippets.", "query" to S))
+            all.put(t("fetch_url", "Open a web page URL and read its text (docs, articles, GitHub readmes).", "url" to S))
+            all.put(t("memory_save", "Save one durable fact about the user to memory.md.", "note" to S))
+            all.put(t("memory_forget", "Remove memory lines containing this text.", "match" to S))
+
+            val off = mutableSetOf<String>()
+            if (!web) off += listOf("web_search", "fetch_url")
+            if (!py) off += "run_python"
+            if (!img) off += "generate_image"
+            if (!mem) off += listOf("memory_save", "memory_forget")
+            val r = JSONArray()
+            for (i in 0 until all.length()) {
+                val o = all.getJSONObject(i)
+                if (o.getJSONObject("function").getString("name") !in off) r.put(o)
+            }
+            return r
+        }
     }
 }

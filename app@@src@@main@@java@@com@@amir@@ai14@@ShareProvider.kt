@@ -11,14 +11,20 @@ import android.webkit.MimeTypeMap
 import java.io.File
 import java.io.FileNotFoundException
 
-/** Lets other apps receive files from the sandbox through the share sheet. */
+/** Lets other apps receive files from the sandbox (share sheet) and lets the camera write into uploads/. */
 class ShareProvider : ContentProvider() {
-    private fun file(uri: Uri): File {
+    private fun file(uri: Uri, write: Boolean = false): File {
         val ctx = context ?: throw FileNotFoundException()
         val uid = ctx.getSharedPreferences("ai14", 0).getString("uid", null) ?: throw FileNotFoundException()
         val root = File(ctx.filesDir, "users/$uid/sandbox").canonicalFile
         val f = File(root, (uri.path ?: "").trimStart('/')).canonicalFile
-        if (!f.path.startsWith(root.path + "/") || !f.isFile) throw FileNotFoundException()
+        if (!f.path.startsWith(root.path + "/")) throw FileNotFoundException()
+        if (write) {
+            if (!f.path.startsWith(root.path + "/uploads/")) throw FileNotFoundException()
+            f.parentFile?.mkdirs()
+            return f
+        }
+        if (!f.isFile) throw FileNotFoundException()
         return f
     }
 
@@ -31,11 +37,15 @@ class ShareProvider : ContentProvider() {
         return c
     }
 
-    override fun getType(uri: Uri): String =
-        MimeTypeMap.getSingleton().getMimeTypeFromExtension(file(uri).extension.lowercase()) ?: "application/octet-stream"
+    override fun getType(uri: Uri): String {
+        val ext = (uri.path ?: "").substringAfterLast('.', "").lowercase()
+        return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+    }
 
-    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor =
-        ParcelFileDescriptor.open(file(uri), ParcelFileDescriptor.MODE_READ_ONLY)
+    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+        val write = mode.contains("w")
+        return ParcelFileDescriptor.open(file(uri, write), ParcelFileDescriptor.parseMode(mode))
+    }
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?) = 0

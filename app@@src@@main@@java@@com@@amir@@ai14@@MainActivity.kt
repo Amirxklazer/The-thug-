@@ -1,20 +1,19 @@
 package com.amir.ai14
 
 import android.Manifest
-import android.animation.ValueAnimator
 import android.app.Activity
-import android.app.AlertDialog
 import android.app.Dialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.graphics.Outline
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -29,23 +28,27 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.util.Base64
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
+import android.view.Window
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.webkit.MimeTypeMap
 import android.webkit.WebView
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
@@ -61,93 +64,223 @@ import java.util.Locale
 import java.util.UUID
 import java.util.zip.ZipFile
 
-/** Live colour palette (black + an accent). Changed from Settings → Theme. */
-private object C {
-    var bg = 0; var card = 0; var card2 = 0; var text = 0; var sub = 0; var hint = 0; var accent = 0
-}
-
 class MainActivity : Activity() {
     private lateinit var st: Store
     private lateinit var sb: Sandbox
     private val scope = MainScope()
+
+    private lateinit var mainView: FrameLayout
     private lateinit var list: LinearLayout
     private lateinit var scroll: ScrollView
-    private lateinit var input: EditText
-    private lateinit var modeBtn: TextView
-    private lateinit var liveBtn: TextView
-    private lateinit var attInfo: TextView
+    private lateinit var input: PasteEdit
+    private lateinit var titleV: TextView
+    private lateinit var chipV: TextView
+    private lateinit var sendBtn: FrameLayout
+    private lateinit var sendIcon: ImageView
+    private lateinit var micIcon: ImageView
+    private lateinit var attScroll: HorizontalScrollView
+    private lateinit var attStrip: LinearLayout
+    private lateinit var drawer: LinearLayout
+    private lateinit var scrim: View
+    private lateinit var recents: LinearLayout
+    private var drawerOpen = false
+    private var drawerW = 0
+    private var onBack: (() -> Unit)? = null
+    private var themeDirty = false
 
-    private var cmode = ""            // "" = not picked yet, "agent", "coding"
+    private var cmode = ""                 // "" = not picked yet, "agent", "coding"
     private var chatId = newId()
-    private val ui = mutableListOf<Pair<String, String>>() // role (user/ai/file/note), text
+    private val ui = mutableListOf<Pair<String, String>>() // role: user / ai / att / file, text
     private val pending = mutableListOf<File>()
+    private var camFile: File? = null
+    private var stepsBody: LinearLayout? = null
+    private var stepsHead: TextView? = null
+    private var stepsN = 0
+
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var rec: SpeechRecognizer? = null
     private var live = false
     private var busy = false
+    private var listening = false
     private var pendingMic: ((String) -> Unit)? = null
 
     // live mode overlay
     private var liveDlg: Dialog? = null
     private var liveStatus: TextView? = null
     private var liveSub: TextView? = null
-    private var orb: View? = null
-    private var pulse: ValueAnimator? = null
+    private var wave: WaveView? = null
     private var liveState = ""
 
-    private val DARK = AlertDialog.THEME_DEVICE_DEFAULT_DARK
+    private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+    private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     private val textExt = setOf("txt", "md", "kt", "kts", "java", "xml", "json", "html", "htm", "css", "js", "py", "csv", "yaml", "yml", "gradle", "sql", "svg", "log", "ini", "properties", "sh")
     private val imgExt = setOf("png", "jpg", "jpeg", "webp", "gif")
 
-    private val themes = linkedMapOf(
-        "Ember" to longArrayOf(0xFF0D0D0E, 0xFF1A1A1C, 0xFF29292C, 0xFFEDEDED, 0xFF9A9AA0, 0xFF6C6C72, 0xFFE8743B),
-        "Ocean" to longArrayOf(0xFF0A0C10, 0xFF161A21, 0xFF232A35, 0xFFEAF0F7, 0xFF93A0B2, 0xFF667286, 0xFF4C8DFF),
-        "Mint" to longArrayOf(0xFF0A0D0C, 0xFF151A18, 0xFF222B28, 0xFFE9F3EF, 0xFF92A39D, 0xFF65756F, 0xFF35D49A),
-        "Violet" to longArrayOf(0xFF0C0B10, 0xFF18161F, 0xFF262330, 0xFFEEEAF7, 0xFF9E98B0, 0xFF6F6A82, 0xFF9B7BFF),
-        "Rose" to longArrayOf(0xFF0E0B0C, 0xFF1C1618, 0xFF2C2326, 0xFFF5EBED, 0xFFA89A9E, 0xFF776A6E, 0xFFFF5C8A)
-    )
-
     private val personas = linkedMapOf(
-        "Friendly" to "Warm, upbeat and a little playful, like a smart friend who loves helping. Light emoji use.",
+        "Friendly" to "Warm, upbeat and a little playful, like a smart friend who loves helping.",
         "Pro" to "Precise, calm and professional. Straight to the point, no filler, no jokes unless invited.",
-        "Hype" to "High-energy hype friend. Celebrate wins, motivate, punchy short lines, plenty of emojis.",
-        "Mentor" to "Patient teacher. Explain the why in simple steps, give small examples, check the user understood, never condescending.",
+        "Hype" to "High-energy hype friend. Celebrate wins, motivate, punchy short lines.",
+        "Mentor" to "Patient teacher. Explain the why in simple steps, give small examples, never condescending.",
         "Chill" to "Laid-back and casual. Short relaxed sentences, easy humor, zero stiffness.",
         "Genius" to "Brilliant nerdy deep thinker. Reason carefully, weigh tradeoffs, point out edge cases, dry wit.",
         "Sassy" to "Witty and a little sarcastic in a lovable way, but always genuinely helpful and never rude."
     )
 
-    private fun applyTheme() {
-        val t = themes[st.get("theme", "Ember")] ?: themes.getValue("Ember")
-        C.bg = t[0].toInt(); C.card = t[1].toInt(); C.card2 = t[2].toInt(); C.text = t[3].toInt()
-        C.sub = t[4].toInt(); C.hint = t[5].toInt(); C.accent = t[6].toInt()
-        window.statusBarColor = C.bg; window.navigationBarColor = C.bg
-    }
-
+    // ───────────── small helpers ─────────────
     private fun newId() = UUID.randomUUID().toString().take(8)
     private fun dp(x: Int) = (x * resources.displayMetrics.density).toInt()
-    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
-    private fun round(c: Int, r: Int = 18) = GradientDrawable().apply { setColor(c); cornerRadius = dp(r).toFloat() }
     private fun isImg(f: File) = f.extension.lowercase() in imgExt
     private fun size(n: Long) = if (n < 1024) "$n B" else if (n < 1048576) "${n / 1024} KB" else "%.1f MB".format(n / 1048576.0)
     private fun pretty(x: File) = x.nameWithoutExtension.replace(Regex("[_\\-]+"), " ").trim().ifBlank { x.name }
+    private fun cap(k: String) = st.get("cap_$k", "1") == "1"
+    private fun id(n: String) = resources.getIdentifier(n, "drawable", packageName)
+    private fun lp(w: Int = MATCH, h: Int = WRAP, wt: Float = 0f) = LinearLayout.LayoutParams(w, h, wt)
+    private fun fl(w: Int, h: Int, g: Int) = FrameLayout.LayoutParams(w, h, g)
+    private fun gap(h: Int) = View(this).apply { layoutParams = LinearLayout.LayoutParams(1, dp(h)) }
+    private fun box(fill: Int, stroke: Int = 0) = GradientDrawable().apply { setColor(fill); if (stroke != 0) setStroke(dp(1).coerceAtLeast(1), stroke) }
 
-    private fun chip(t: String, f: () -> Unit) = TextView(this).apply {
-        text = t; textSize = 19f; gravity = Gravity.CENTER; setTextColor(C.text)
-        setPadding(dp(11), dp(8), dp(11), dp(8)); setOnClickListener { f() }
+    private fun face(): Typeface = when (st.get("font", "Serif")) {
+        "Sans" -> Typeface.DEFAULT
+        "Mono" -> Typeface.MONOSPACE
+        else -> Typeface.SERIF
     }
 
+    private fun tv(t: String, sz: Float = 16f, col: Int = C.text, bold: Boolean = false, serif: Boolean = false) = TextView(this).apply {
+        text = t; textSize = sz; setTextColor(col)
+        typeface = if (serif) Typeface.create(Typeface.SERIF, if (bold) Typeface.BOLD else Typeface.NORMAL)
+        else if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+    }
+
+    private fun ic(n: String, tint: Int = C.text, s: Int = 22) = ImageView(this).apply {
+        setImageResource(id(n)); setColorFilter(tint); scaleType = ImageView.ScaleType.FIT_CENTER
+        layoutParams = LinearLayout.LayoutParams(dp(s), dp(s))
+    }
+
+    private fun View.onTap(f: () -> Unit) {
+        setOnClickListener {
+            if (st.get("haptic", "1") == "1") performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            f()
+        }
+    }
+
+    private fun iconBtn(n: String, tint: Int = C.text, f: () -> Unit) = FrameLayout(this).apply {
+        addView(ic(n, tint), fl(dp(22), dp(22), Gravity.CENTER))
+        layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+        onTap(f)
+    }
+
+    private fun btn(t: String, bg: Int, fg: Int, f: () -> Unit) = TextView(this).apply {
+        text = t; textSize = 16f; gravity = Gravity.CENTER; setTextColor(fg); setBackgroundColor(bg)
+        typeface = Typeface.DEFAULT_BOLD; setPadding(dp(12), dp(15), dp(12), dp(15))
+        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(10) }
+        onTap(f)
+    }
+
+    private fun toast(s: String) {
+        val t = TextView(this).apply {
+            text = s; textSize = 14f; setTextColor(C.text); setBackgroundColor(C.card2)
+            setPadding(dp(18), dp(12), dp(18), dp(12)); elevation = dp(8).toFloat()
+        }
+        addContentView(t, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(110) })
+        t.postDelayed({ (t.parent as? ViewGroup)?.removeView(t) }, 2200)
+    }
+
+    private fun toggle(on0: Boolean, f: (Boolean) -> Unit): View {
+        var on = on0
+        val track = FrameLayout(this)
+        val knob = View(this)
+        track.addView(knob, FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER_VERTICAL or Gravity.START).apply { setMargins(dp(3), 0, dp(3), 0) })
+        fun paint() {
+            track.setBackgroundColor(if (on) C.accent else C.card2)
+            knob.setBackgroundColor(if (on) Color.WHITE else C.sub)
+            (knob.layoutParams as FrameLayout.LayoutParams).gravity = Gravity.CENTER_VERTICAL or (if (on) Gravity.END else Gravity.START)
+            knob.requestLayout()
+        }
+        paint()
+        track.onTap { on = !on; paint(); f(on) }
+        track.layoutParams = LinearLayout.LayoutParams(dp(46), dp(26))
+        return track
+    }
+
+    private fun row(icon: String?, title: String, sub: String? = null, tint: Int = C.text, trailing: View? = null, chevron: Boolean = trailing == null, onClick: (() -> Unit)? = null): View {
+        val r = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setBackgroundColor(C.card); setPadding(dp(16), dp(14), dp(14), dp(14)) }
+        if (icon != null) r.addView(ic(icon, tint, 22), lp(dp(22), dp(22)).apply { rightMargin = dp(16) })
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(tv(title, 17f, tint))
+        if (sub != null) col.addView(tv(sub, 14f, C.sub).apply { setPadding(0, dp(2), 0, 0) })
+        r.addView(col, lp(0, WRAP, 1f))
+        if (trailing != null) r.addView(trailing) else if (chevron) r.addView(ic("ic_chev", C.hint, 18))
+        if (onClick != null) r.onTap(onClick)
+        r.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(2) }
+        return r
+    }
+
+    private fun sheet(title: String?, build: (LinearLayout, () -> Unit) -> Unit) {
+        val d = Dialog(this)
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE)
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.sheet); setPadding(dp(14), dp(10), dp(14), dp(18)) }
+        col.addView(View(this).apply { setBackgroundColor(C.card2) }, lp(dp(40), dp(4)).apply { gravity = Gravity.CENTER_HORIZONTAL; bottomMargin = dp(14) })
+        if (title != null) col.addView(tv(title, 21f, C.text, serif = true).apply { gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(12)) })
+        build(col) { d.dismiss() }
+        d.setContentView(ScrollView(this).apply { addView(col) })
+        d.window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            setGravity(Gravity.BOTTOM)
+            setLayout(MATCH, WRAP)
+            setWindowAnimations(android.R.style.Animation_InputMethod)
+        }
+        d.show()
+    }
+
+    private fun opt(col: LinearLayout, title: String, sub: String?, selected: Boolean, f: () -> Unit) {
+        col.addView(row(null, title, sub, if (selected) C.accent else C.text, trailing = if (selected) ic("ic_check", C.accent, 20) else View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(20), dp(20)) }, onClick = f))
+    }
+
+    private fun confirm(msg: String, okLabel: String, f: () -> Unit) = sheet(null) { col, close ->
+        col.addView(tv(msg, 18f, C.text, serif = true).apply { gravity = Gravity.CENTER; setPadding(dp(8), dp(4), dp(8), dp(10)) })
+        col.addView(btn(okLabel, C.accent, Color.WHITE) { close(); f() })
+        col.addView(btn("Cancel", C.card2, C.text) { close() })
+    }
+
+    private fun hideKb() { (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(window.decorView.windowToken, 0) }
+
+    // ───────────── theme ─────────────
+    private fun applyTheme() {
+        val m = st.get("cm", "Dark")
+        val dark = when (m) {
+            "Light" -> false
+            "Dark" -> true
+            else -> (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        }
+        C.dark = dark
+        if (dark) {
+            C.bg = 0xFF121212.toInt(); C.card = 0xFF1E1E1E.toInt(); C.card2 = 0xFF2B2B2B.toInt(); C.sheet = 0xFF1A1A1A.toInt()
+            C.text = 0xFFEDEDED.toInt(); C.sub = 0xFF9A9A9A.toInt(); C.hint = 0xFF6F6F6F.toInt(); C.line = 0xFF2E2E2E.toInt()
+        } else {
+            C.bg = 0xFFFAF9F5.toInt(); C.card = 0xFFFFFFFF.toInt(); C.card2 = 0xFFEFEDE6.toInt(); C.sheet = 0xFFFFFFFF.toInt()
+            C.text = 0xFF1F1E1D.toInt(); C.sub = 0xFF6B6A68.toInt(); C.hint = 0xFF9C9A95.toInt(); C.line = 0xFFE3E0D8.toInt()
+        }
+        C.accent = (0xFF000000 or st.get("accent", "D97757").toLong(16)).toInt()
+        window.statusBarColor = C.bg
+        window.navigationBarColor = C.bg
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = if (dark) 0 else (View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR)
+    }
+
+    // ───────────── lifecycle ─────────────
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
         st = Store(this, "_")
         applyTheme()
+        drawerW = (resources.displayMetrics.widthPixels * 0.84f).toInt()
         tts = TextToSpeech(this) { s ->
             ttsReady = s == TextToSpeech.SUCCESS
             tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(id: String?) {}
-                override fun onDone(id: String?) { runOnUiThread { if (live) liveListen() } }
-                override fun onError(id: String?) { runOnUiThread { if (live) liveListen() } }
+                override fun onStart(utteranceId: String?) {}
+                override fun onDone(utteranceId: String?) { runOnUiThread { if (live) liveListen() } }
+                @Deprecated("Deprecated in Java")
+                override fun onError(utteranceId: String?) { runOnUiThread { if (live) liveListen() } }
             })
         }
         val uid = st.get("uid")
@@ -156,104 +289,23 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        pulse?.cancel(); liveDlg?.dismiss()
+        wave?.run(false); liveDlg?.dismiss()
         tts?.shutdown(); rec?.destroy(); scope.cancel()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        val b = onBack
+        if (drawerOpen) closeDrawer() else if (b != null) b() else super.onBackPressed()
     }
 
     private fun startApp(uid: String) {
         st = Store(this, uid); sb = Sandbox(this, st)
         applyTheme()
-        ui.clear(); pending.clear()
+        ui.clear(); pending.clear(); cmode = ""
         buildMain()
         newChat()
-        if (st.get("ptoken").isBlank() && st.get("gkey").isBlank() && st.get("qkey").isBlank()) keysDialog()
-    }
-
-    private fun buildMain() {
-        val rootV = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.bg) }
-        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(6), dp(8), dp(6)) }
-        modeBtn = chip("🔀 Mode") {
-            if (ui.isEmpty()) showPicker()
-            else { cmode = if (cmode == "coding") "agent" else "coding"; updMode(); toast(if (cmode == "coding") "Coding mode" else "Agent mode") }
-        }.apply { textSize = 14f; background = round(C.card2, 14) }
-        bar.addView(modeBtn)
-        bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        bar.addView(chip("＋") { newChat() })
-        bar.addView(chip("🕘") { history() })
-        bar.addView(chip("📁") { files() })
-        bar.addView(chip("🧠") { memoryDlg() })
-        bar.addView(chip("⚙") { settings() })
-
-        scroll = ScrollView(this)
-        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, dp(12)) }
-        scroll.addView(list)
-        attInfo = TextView(this).apply {
-            setTextColor(C.accent); textSize = 13f
-            setPadding(dp(16), 0, dp(16), dp(4)); visibility = View.GONE
-        }
-        input = EditText(this).apply {
-            hint = "Message 14AI…"; setHintTextColor(C.hint); setTextColor(C.text)
-            background = round(C.card, 22); setPadding(dp(16), dp(10), dp(16), dp(10)); maxLines = 5
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        }
-        liveBtn = chip("🎧") { toggleLive() }
-        val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(6), dp(6), dp(6), dp(8)) }
-        row.addView(chip("📎") { pick() })
-        row.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(chip("🎤") { tts?.stop(); listen { t -> input.setText(t); input.setSelection(t.length) } })
-        row.addView(liveBtn)
-        row.addView(chip("➤") { send(input.text.toString(), live) }.apply { background = round(C.accent, 20); setTextColor(Color.WHITE) })
-        rootV.addView(bar)
-        rootV.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        rootV.addView(attInfo)
-        rootV.addView(row)
-        setContentView(rootV)
-        updMode(); updLive()
-    }
-
-    private fun refreshUi() {
-        buildMain()
-        if (ui.isEmpty() && cmode == "") showPicker() else renderChat()
-        updAtt()
-    }
-
-    // ───────────── login ─────────────
-    private fun bigBtn(t: String, bg: Int, fg: Int, f: () -> Unit) = TextView(this).apply {
-        text = t; textSize = 16f; gravity = Gravity.CENTER; setTextColor(fg); background = round(bg, 14)
-        setPadding(dp(12), dp(14), dp(12), dp(14)); setOnClickListener { f() }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
-    }
-
-    private fun styled(e: EditText) = e.apply {
-        setTextColor(C.text); setHintTextColor(C.hint); background = round(C.card, 14)
-        setPadding(dp(16), dp(14), dp(16), dp(14)); setSingleLine(true)
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
-    }
-
-    private fun showLogin() {
-        window.statusBarColor = C.bg; window.navigationBarColor = C.bg
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(28), dp(56), dp(28), dp(24)) }
-        col.addView(TextView(this).apply { text = "14AI"; textSize = 46f; setTextColor(C.accent); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER })
-        col.addView(TextView(this).apply { text = "Your personal AI agent ✨"; textSize = 15f; setTextColor(C.sub); gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(24)) })
-        val em = styled(EditText(this).apply { hint = "Email"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS })
-        val pw = styled(EditText(this).apply { hint = "Password (6+ characters)"; inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD })
-        val err = TextView(this).apply { setTextColor(0xFFFF8A80.toInt()); textSize = 13f; gravity = Gravity.CENTER; setPadding(0, dp(10), 0, 0) }
-        val go: (Boolean) -> Unit = { create ->
-            val e = em.text.toString(); val p = pw.text.toString()
-            err.text = "⏳ One sec…"
-            scope.launch {
-                try {
-                    withContext(Dispatchers.IO) { Auth.email(st, e, p, create) }
-                    enter(Auth.uid(e), e.trim().lowercase(), e.trim().substringBefore("@"), "email")
-                } catch (x: Exception) { err.text = x.message ?: "Something went wrong" }
-            }
-        }
-        col.addView(em); col.addView(pw); col.addView(err)
-        col.addView(bigBtn("Sign in", C.accent, Color.WHITE) { go(false) })
-        col.addView(bigBtn("Create account", C.card2, C.text) { go(true) })
-        col.addView(TextView(this).apply { text = "Continue as guest"; textSize = 14f; gravity = Gravity.CENTER; setTextColor(C.sub); setPadding(0, dp(22), 0, dp(10)); setOnClickListener { enter("guest", "", "Guest", "guest") } })
-        col.addView(TextView(this).apply { text = "🔑 Login setup (optional)"; textSize = 13f; gravity = Gravity.CENTER; setTextColor(C.accent); setPadding(0, dp(6), 0, dp(6)); setOnClickListener { authSetup() } })
-        setContentView(ScrollView(this).apply { isFillViewport = true; setBackgroundColor(C.bg); addView(col) })
+        if (st.get("grkey").isBlank() && st.get("gkey").isBlank() && st.get("qkey").isBlank()) keysPage { backToMain() }
     }
 
     private fun enter(uid: String, email: String, name: String, method: String) {
@@ -262,140 +314,371 @@ class MainActivity : Activity() {
     }
 
     private fun signOut() {
-        saveChat(); stopLive(); tts?.stop(); rec?.cancel()
+        saveChat(); stopLive()
         st.put("uid", ""); st = Store(this, "_"); showLogin()
     }
 
-    private fun authSetup() = fieldsDialog(
-        "🔑 Login setup",
-        listOf(Triple("fbkey", "Firebase Web API key (optional)", "")),
-        "Email login works without any setup as an account stored on this phone. Paste a Firebase Web API key to use real cloud accounts instead."
-    )
-
-    private fun paste(et: EditText) {
-        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-        val t = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()?.trim()
-        if (!t.isNullOrBlank()) et.setText(t) else toast("Clipboard is empty")
+    // ───────────── screens ─────────────
+    private fun showScreen(title: String, body: View, back: () -> Unit, right: View? = null) {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.bg) }
+        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(4), dp(4), dp(4)) }
+        bar.addView(iconBtn("ic_back") { back() })
+        bar.addView(tv(title, 20f, C.text, serif = true).apply { gravity = Gravity.CENTER; maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, lp(0, WRAP, 1f))
+        bar.addView(right ?: View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(44), dp(44)) })
+        col.addView(bar)
+        col.addView(body, lp(MATCH, 0, 1f))
+        onBack = back
+        setContentView(col)
     }
 
-    private fun fieldsDialog(title: String, items: List<Triple<String, String, String>>, note: String?, extra: String? = null, onExtra: (() -> Unit)? = null) {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
-        if (note != null) box.addView(TextView(this).apply { text = note; textSize = 13f; setTextColor(0xFFB0B0B6.toInt()) })
-        val ets = items.map { (k, l, d) ->
-            box.addView(TextView(this).apply { text = l; textSize = 12f; setTextColor(0xFF9A9AA0.toInt()); setPadding(0, dp(12), 0, 0) })
-            val et = EditText(this).apply { setText(st.get(k, d)); setTextColor(Color.WHITE); if (k != "custom") setSingleLine(true) }
-            val r = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-            r.addView(et, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            r.addView(chip("📋") { paste(et) })
-            box.addView(r)
-            et
+    private fun backToMain() {
+        onBack = null
+        if (themeDirty) { themeDirty = false; buildMain(); renderChat() }
+        setContentView(mainView)
+    }
+
+    private fun scrolled(v: View) = ScrollView(this).apply { isVerticalScrollBarEnabled = false; addView(v) }
+
+    // ───────────── main screen ─────────────
+    private fun buildMain() {
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.bg) }
+        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(4), dp(4), dp(4)) }
+        titleV = tv("14AI", 18f, C.text, serif = true).apply { gravity = Gravity.CENTER; maxLines = 1; ellipsize = TextUtils.TruncateAt.END }
+        bar.addView(iconBtn("ic_menu") { openDrawer() })
+        bar.addView(titleV, lp(0, WRAP, 1f))
+        bar.addView(iconBtn("ic_artifact") { filesScreen() })
+        bar.addView(iconBtn("ic_new") { newChat() })
+        bar.addView(iconBtn("ic_more") { chatMenu() })
+
+        scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
+        list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(4), 0, dp(16)) }
+        scroll.addView(list)
+
+        val card = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = box(C.card, C.line); setPadding(dp(12), dp(10), dp(12), dp(10)) }
+        attStrip = LinearLayout(this)
+        attScroll = HorizontalScrollView(this).apply { visibility = View.GONE; isHorizontalScrollBarEnabled = false; addView(attStrip) }
+        card.addView(attScroll, lp().apply { bottomMargin = dp(8) })
+        input = PasteEdit(this).apply {
+            hint = "Message 14AI"; setHintTextColor(C.hint); setTextColor(C.text); textSize = 17f
+            background = null; maxLines = 6; setPadding(dp(2), dp(4), dp(2), dp(4))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            onImages = { us -> addUris(us) }
+            addTextChangedListener(object : TextWatcher {
+                override fun afterTextChanged(s: Editable?) { updSend() }
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            })
         }
-        val b = AlertDialog.Builder(this, DARK).setTitle(title).setView(ScrollView(this).apply { addView(box) })
-            .setPositiveButton("Save") { _, _ -> items.forEachIndexed { i, f -> st.put(f.first, ets[i].text.toString()) }; toast("Saved ✅") }
-            .setNegativeButton("Close", null)
-        if (extra != null) b.setNeutralButton(extra) { _, _ -> onExtra?.invoke() }
-        b.show()
+        card.addView(input, lp())
+        val row2 = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val plus = FrameLayout(this).apply { setBackgroundColor(C.card2); addView(ic("ic_plus", C.text, 22), fl(dp(22), dp(22), Gravity.CENTER)); onTap { addSheet() } }
+        row2.addView(plus, lp(dp(40), dp(40)))
+        chipV = tv("", 14f, C.text).apply {
+            setBackgroundColor(C.card2); gravity = Gravity.CENTER_VERTICAL; setPadding(dp(14), 0, dp(10), 0)
+            compoundDrawablePadding = dp(6)
+            val d = getDrawable(id("ic_chev_down"))!!
+            d.mutate().setTint(C.sub); d.setBounds(0, 0, dp(16), dp(16))
+            setCompoundDrawables(null, null, d, null)
+            onTap { modelSheet() }
+        }
+        row2.addView(chipV, lp(WRAP, dp(40)).apply { leftMargin = dp(10) })
+        row2.addView(View(this), lp(0, 1, 1f))
+        micIcon = ic("ic_mic", C.text, 22)
+        row2.addView(FrameLayout(this).apply { addView(micIcon, fl(dp(22), dp(22), Gravity.CENTER)); onTap { micTap() } }, lp(dp(44), dp(40)))
+        sendIcon = ic("ic_wave", C.bg, 22)
+        sendBtn = FrameLayout(this).apply { addView(sendIcon, fl(dp(22), dp(22), Gravity.CENTER)); onTap { sendOrLive() } }
+        row2.addView(sendBtn, lp(dp(44), dp(40)).apply { leftMargin = dp(6) })
+        card.addView(row2, lp().apply { topMargin = dp(6) })
+        val wrap = FrameLayout(this).apply { setPadding(dp(10), dp(4), dp(10), dp(10)); addView(card) }
+
+        content.addView(bar)
+        content.addView(scroll, lp(MATCH, 0, 1f))
+        content.addView(wrap)
+
+        mainView = FrameLayout(this)
+        mainView.addView(content, FrameLayout.LayoutParams(MATCH, MATCH))
+        scrim = View(this).apply { setBackgroundColor(0x99000000.toInt()); visibility = View.GONE; alpha = 0f; setOnClickListener { closeDrawer() } }
+        mainView.addView(scrim, FrameLayout.LayoutParams(MATCH, MATCH))
+        buildDrawer()
+        mainView.addView(drawer, FrameLayout.LayoutParams(drawerW, MATCH))
+        drawer.translationX = -drawerW.toFloat()
+        drawerOpen = false
+        setContentView(mainView)
+        updChip(); updSend(); refreshAtt()
     }
 
-    private fun keysDialog() = fieldsDialog(
-        "🔑 Connect your AI",
-        listOf(Triple("ptoken", "Puter token", ""), Triple("gkey", "Gemini API key (optional)", ""), Triple("qkey", "Qwen API key (optional)", "")),
-        "Tap 📋 to paste from your clipboard. One is enough.\nPuter: puter.com/dashboard → Create token\nGemini: aistudio.google.com/apikey"
-    )
+    private fun buildDrawer() {
+        drawer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.bg); setPadding(dp(18), dp(36), dp(18), dp(14)); isClickable = true }
+        val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        head.addView(ic("ic_logo", C.accent, 30))
+        head.addView(tv("14AI", 30f, C.text, serif = true).apply { setPadding(dp(10), 0, 0, 0) })
+        drawer.addView(head, lp().apply { bottomMargin = dp(18) })
+        fun nav(icon: String, label: String, f: () -> Unit) {
+            val r = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(14), dp(4), dp(14)); onTap { closeDrawer(); f() } }
+            r.addView(ic(icon, C.sub, 24), lp(dp(24), dp(24)).apply { rightMargin = dp(18) })
+            r.addView(tv(label, 19f, C.text))
+            drawer.addView(r)
+        }
+        nav("ic_chat", "Chats") { chatsScreen() }
+        nav("ic_artifact", "Files") { filesScreen() }
+        nav("ic_memory", "Memory") { memoryScreen() }
+        nav("ic_sliders", "Settings") { settingsScreen() }
+        drawer.addView(View(this).apply { setBackgroundColor(C.line) }, lp(MATCH, 1).apply { topMargin = dp(10); bottomMargin = dp(10) })
+        drawer.addView(tv("Recents", 15f, C.sub).apply { setPadding(dp(4), dp(8), 0, dp(8)) })
+        recents = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        drawer.addView(scrolled(recents), lp(MATCH, 0, 1f))
+        val bottom = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(10), 0, 0) }
+        val nm = st.get("name").ifBlank { "14" }
+        val av = tv(nm.take(1).uppercase(), 18f, Color.WHITE, bold = true).apply { gravity = Gravity.CENTER; setBackgroundColor(C.accent) }
+        bottom.addView(av, lp(dp(48), dp(48)))
+        bottom.addView(View(this), lp(0, 1, 1f))
+        val nb = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setBackgroundColor(C.text); setPadding(dp(18), dp(14), dp(22), dp(14)); onTap { closeDrawer(); newChat() } }
+        nb.addView(ic("ic_plus", C.bg, 20))
+        nb.addView(tv("New chat", 17f, C.bg, bold = true).apply { setPadding(dp(8), 0, 0, 0) })
+        bottom.addView(nb)
+        drawer.addView(bottom)
+    }
 
-    private fun settings() {
-        val who = if (st.get("method") == "guest") "Guest" else st.get("name")
-        val items = arrayOf(
-            "🎨 Theme · ${st.get("theme", "Ember")}",
-            "🎭 Personality · ${st.get("persona", "Friendly")}",
-            "🔑 Keys & models",
-            "🎙 Voice language · ${st.get("lang", "en-US")}",
-            "✍ Custom instructions",
-            "🔐 Login setup",
-            "🚪 Sign out ($who)"
-        )
-        AlertDialog.Builder(this, DARK).setTitle("⚙ Settings").setItems(items) { _, i ->
-            when (i) {
-                0 -> pickTheme()
-                1 -> pickPersona()
-                2 -> fieldsDialog("🔑 Keys & models", listOf(
-                    Triple("ptoken", "Puter token (used first when set)", ""),
-                    Triple("pmodel", "Puter model (Agent)", "gpt-5.4-nano"),
-                    Triple("pcmodel", "Puter model (Coding)", "gpt-5.4-nano"),
-                    Triple("gkey", "Gemini API key", ""),
-                    Triple("gmodel", "Gemini model (Agent)", "gemini-2.5-flash"),
-                    Triple("qkey", "Qwen (DashScope) API key", ""),
-                    Triple("cmodel", "Qwen coding model (Coding mode)", "qwen3-coder-plus"),
-                    Triple("qmodel", "Qwen general model", "qwen-plus"),
-                    Triple("qbase", "Qwen base URL (Singapore = intl)", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
-                    Triple("imodel", "Image model (Gemini)", "gemini-2.5-flash-image")
-                ), null)
-                3 -> fieldsDialog("🎙 Voice language", listOf(Triple("lang", "en-US, fr-FR, ar-DZ…", "en-US")), "Used for the mic and for the AI's spoken voice.")
-                4 -> fieldsDialog("✍ Custom instructions", listOf(Triple("custom", "Always follow these", "")), "Added to every chat.")
-                5 -> authSetup()
-                else -> signOut()
+    private fun fillRecents() {
+        recents.removeAllViews()
+        st.chats().forEach { (cid, title) ->
+            val t = tv(title, 16f, C.text).apply {
+                maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setPadding(dp(12), dp(12), dp(12), dp(12))
+                if (cid == chatId) setBackgroundColor(C.card2)
+                onTap { closeDrawer(); openChat(cid) }
+                setOnLongClickListener { chatOptions(cid, title); true }
             }
-        }.show()
-    }
-
-    private fun pickTheme() {
-        val names = themes.keys.toList()
-        AlertDialog.Builder(this, DARK).setTitle("🎨 Theme").setItems(names.toTypedArray()) { _, i ->
-            st.put("theme", names[i]); applyTheme(); refreshUi(); toast("${names[i]} theme on")
-        }.show()
-    }
-
-    private fun pickPersona() {
-        val names = personas.keys.toList()
-        val shown = names.map { "$it  ·  ${personas.getValue(it).substringBefore('.')}" }
-        AlertDialog.Builder(this, DARK).setTitle("🎭 Personality").setItems(shown.toTypedArray()) { _, i ->
-            st.put("persona", names[i]); toast("${names[i]} personality on")
-        }.show()
-    }
-
-    // ───────────── chat UI ─────────────
-    private fun scrollDown() { scroll.post { scroll.fullScroll(View.FOCUS_DOWN) } }
-
-    private fun addBubble(role: String, text: String, save: Boolean = true) {
-        if (save) ui.add(role to text)
-        val tv = TextView(this).apply {
-            this.text = text; textSize = 16f; setTextColor(C.text); setTextIsSelectable(true)
-            setLineSpacing(0f, 1.12f)
-            if (role == "user") { background = round(C.card2); setPadding(dp(14), dp(10), dp(14), dp(10)) }
-            if (role == "note") { textSize = 13f; setTextColor(C.sub) }
+            recents.addView(t, lp())
         }
-        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        lp.setMargins(dp(14), dp(6), dp(14), dp(6)); lp.gravity = if (role == "user") Gravity.END else Gravity.START
-        list.addView(tv, lp); scrollDown()
     }
 
-    // ── mode picker (start of every new chat) ──
-    private fun modeCard(icon: String, title: String, desc: String, f: () -> Unit): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL; background = round(C.card, 20); setPadding(dp(18), dp(16), dp(18), dp(16))
-        addView(TextView(context).apply { text = "$icon  $title"; textSize = 19f; setTextColor(C.accent); typeface = Typeface.DEFAULT_BOLD })
-        addView(TextView(context).apply { text = desc; textSize = 14f; setTextColor(C.sub); setPadding(0, dp(4), 0, 0) })
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { setMargins(dp(14), dp(6), dp(14), dp(6)) }
-        setOnClickListener { f() }
+    private fun openDrawer() {
+        fillRecents(); hideKb()
+        scrim.visibility = View.VISIBLE
+        scrim.animate().alpha(1f).setDuration(160).start()
+        drawer.animate().translationX(0f).setDuration(200).start()
+        drawerOpen = true
     }
 
-    private fun showPicker() {
+    private fun closeDrawer() {
+        scrim.animate().alpha(0f).setDuration(160).withEndAction { scrim.visibility = View.GONE }.start()
+        drawer.animate().translationX(-drawerW.toFloat()).setDuration(200).start()
+        drawerOpen = false
+    }
+
+    private fun updChip() {
+        chipV.text = (if (cmode == "coding") "Coding" else "Agent") + "  " + modelFor(pickProv(), false).substringAfterLast('/').take(20)
+    }
+
+    private fun updSend() {
+        val has = input.text.isNotBlank() || pending.isNotEmpty()
+        sendIcon.setImageResource(id(if (has) "ic_send" else "ic_wave"))
+        sendIcon.setColorFilter(if (has) Color.WHITE else C.bg)
+        sendBtn.setBackgroundColor(if (has) C.accent else C.text)
+    }
+
+    private fun sendOrLive() { if (input.text.isNotBlank() || pending.isNotEmpty()) send(input.text.toString(), false) else toggleLive() }
+
+    private fun setMicOn(on: Boolean) { listening = on; micIcon.setColorFilter(if (on) C.accent else C.text) }
+
+    private fun micTap() {
+        if (listening) { rec?.cancel(); setMicOn(false); return }
+        tts?.stop(); setMicOn(true)
+        listen { t -> setMicOn(false); input.setText(t); input.setSelection(t.length) }
+    }
+
+    // ───────────── sheets from the main screen ─────────────
+    private fun addSheet(): Unit = sheet(null) { col, close ->
+        col.addView(tv("Add to chat", 21f, C.text, serif = true).apply { gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(14)) })
+        val tiles = LinearLayout(this)
+        fun tile(icon: String, label: String, f: () -> Unit) {
+            val t = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setBackgroundColor(C.card); setPadding(0, dp(16), 0, dp(14)); onTap { close(); f() } }
+            t.addView(ic(icon, C.text, 26), lp(dp(26), dp(26)))
+            t.addView(tv(label, 14f, C.text).apply { setPadding(0, dp(8), 0, 0); gravity = Gravity.CENTER })
+            tiles.addView(t, lp(0, WRAP, 1f).apply { setMargins(dp(3), 0, dp(3), 0) })
+        }
+        tile("ic_camera", "Camera") { camera() }
+        tile("ic_photo", "Photos") { pickFiles("image/*") }
+        tile("ic_upload", "Files") { pickFiles("*/*") }
+        tile("ic_paste", "Paste") { pasteImages() }
+        col.addView(tiles, lp())
+        col.addView(gap(10))
+        col.addView(row("ic_code", "Mode", if (cmode == "coding") "Coding" else "Agent") { close(); modelSheet() })
+        col.addView(row("ic_web", "Web search", trailing = toggle(cap("web")) { st.put("cap_web", if (it) "1" else "0") }))
+        col.addView(row("ic_persona", "Personality", st.get("persona", "Friendly")) { close(); personaSheet() })
+        col.addView(row("ic_memory", "Memory", trailing = toggle(cap("mem")) { st.put("cap_mem", if (it) "1" else "0") }))
+    }
+
+    private fun modelSheet(): Unit = sheet("Mode and model") { col, close ->
+        opt(col, "Agent", "Chat, search the web, make files, images and PDFs", cmode != "coding") { setMode("agent"); close() }
+        opt(col, "Coding", "Research first, then build complete projects", cmode == "coding") { setMode("coding"); close() }
+        col.addView(tv("Provider", 15f, C.sub).apply { setPadding(0, dp(14), 0, dp(6)) })
+        listOf("Auto", "Groq", "Gemini", "Qwen").forEach { p ->
+            opt(col, p, when (p) { "Auto" -> "Groq first, then Gemini, then Qwen"; "Groq" -> "Fast open models. Best for coding"; "Gemini" -> "Google Gemini"; else -> "Alibaba Qwen" }, st.get("prov", "Auto") == p) { st.put("prov", p); updChip(); close() }
+        }
+    }
+
+    private fun personaSheet(): Unit = sheet("Personality") { col, close ->
+        personas.keys.forEach { n ->
+            opt(col, n, personas.getValue(n).substringBefore('.'), st.get("persona", "Friendly") == n) { st.put("persona", n); close(); toast("$n personality on") }
+        }
+    }
+
+    private fun setMode(m: String) {
+        cmode = m; updChip()
+        if (ui.isEmpty()) choose(m)
+    }
+
+    private fun chatMenu(): Unit = sheet(null) { col, close ->
+        col.addView(row("ic_memory", "Memory") { close(); memoryScreen() })
+        col.addView(row("ic_artifact", "Files") { close(); filesScreen() })
+        col.addView(row("ic_copy", "Copy chat") {
+            close()
+            val txt = ui.filter { it.first == "user" || it.first == "ai" }.joinToString("\n\n") { (if (it.first == "user") "You: " else "14AI: ") + it.second }
+            (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("chat", txt)); toast("Chat copied")
+        })
+        col.addView(row("ic_trash", "Delete chat", tint = C.accent) {
+            close(); confirm("Delete this chat?", "Delete") { File(st.chatsDir, "$chatId.json").delete(); chatId = newId(); ui.clear(); newChat() }
+        })
+    }
+
+    private fun chatOptions(cid: String, title: String): Unit = sheet(title.take(40)) { col, close ->
+        col.addView(row("ic_chat", "Open") { close(); closeDrawer(); openChat(cid) })
+        col.addView(row("ic_trash", "Delete", tint = C.accent) { close(); File(st.chatsDir, "$cid.json").delete(); if (cid == chatId) newChat(); fillRecents(); toast("Deleted") })
+    }
+
+    // ───────────── empty state ─────────────
+    private fun modeCard(icon: String, title: String, desc: String, f: () -> Unit): View {
+        val c = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; background = box(C.card, C.line); setPadding(dp(16), dp(16), dp(16), dp(16)); onTap(f) }
+        val t = FrameLayout(this).apply { setBackgroundColor(C.accent); addView(ic(icon, Color.WHITE, 24), fl(dp(24), dp(24), Gravity.CENTER)) }
+        c.addView(t, lp(dp(48), dp(48)).apply { rightMargin = dp(16) })
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(tv(title, 19f, C.text, serif = true, bold = true))
+        col.addView(tv(desc, 14f, C.sub).apply { setPadding(0, dp(3), 0, 0) })
+        c.addView(col, lp(0, WRAP, 1f))
+        c.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(10) }
+        return c
+    }
+
+    private fun emptyState() {
         list.removeAllViews()
-        list.addView(TextView(this).apply { text = "What are we doing?"; textSize = 26f; setTextColor(C.text); typeface = Typeface.DEFAULT_BOLD; setPadding(dp(18), dp(28), dp(18), dp(2)) })
-        list.addView(TextView(this).apply { text = "Pick a mode for this chat"; textSize = 14f; setTextColor(C.sub); setPadding(dp(18), 0, dp(18), dp(14)) })
-        list.addView(modeCard("🤖", "Agent", "Talk normally, search the web, make files, images, PDFs and run Python.") { choose("agent") })
-        list.addView(modeCard("💻", "Coding", "Builds full apps. Searches the web and docs first, then ships a flat zip with build.yml.") { choose("coding") })
+        val b = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(22), dp(56), dp(22), 0) }
+        b.addView(ic("ic_logo", C.accent, 56), lp(dp(56), dp(56)))
+        b.addView(tv("What are we working on?", 28f, C.text, serif = true).apply { gravity = Gravity.CENTER; setPadding(0, dp(18), 0, dp(6)) })
+        b.addView(tv("Pick a mode to start.", 15f, C.sub).apply { gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(14)) })
+        b.addView(modeCard("ic_chat", "Agent", "Chat about anything, search the web, make files, images and PDFs, run Python.") { choose("agent") })
+        b.addView(modeCard("ic_code", "Coding", "Research first, then build complete apps and ship a flat zip with build.yml.") { choose("coding") })
+        list.addView(b)
     }
 
     private fun choose(m: String) {
-        cmode = m; updMode(); list.removeAllViews()
-        val p = st.get("persona", "Friendly")
-        addBubble("note", if (m == "coding") "💻 Coding mode · $p · tell me what to build and I'll research it first." else "🤖 Agent mode · $p · ask me anything or tell me to make something.", false)
+        cmode = m; updChip(); list.removeAllViews()
+        addBubble("note", if (m == "coding") "Coding mode. Tell me what to build and I will research it first." else "Agent mode. Ask me anything or tell me to make something.", false)
         input.requestFocus()
     }
 
-    private fun updMode() { modeBtn.text = when (cmode) { "agent" -> "🤖 Agent"; "coding" -> "💻 Coding"; else -> "🔀 Mode" } }
+    // ───────────── chat rendering ─────────────
+    private fun scrollDown() { scroll.post { scroll.fullScroll(View.FOCUS_DOWN) } }
 
-    // ── Claude-style file cards ──
+    private fun copyText(s: String) { (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("code", s)); toast("Copied") }
+
+    private fun codeBlock(code: String, lang: String): View {
+        val c = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = box(C.card, C.line) }
+        val h = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12), dp(2), dp(2), dp(2)) }
+        h.addView(tv(lang.ifBlank { "code" }, 13f, C.sub), lp(0, WRAP, 1f))
+        h.addView(iconBtn("ic_copy", C.sub) { copyText(code) })
+        c.addView(h)
+        val t = TextView(this).apply { text = code; typeface = Typeface.MONOSPACE; textSize = 12.5f; setTextColor(C.text); setPadding(dp(12), dp(4), dp(12), dp(12)); setTextIsSelectable(true) }
+        c.addView(HorizontalScrollView(this).apply { addView(t) })
+        c.layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(6); bottomMargin = dp(6) }
+        return c
+    }
+
+    private fun aiView(text: String): View {
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        text.split("```").forEachIndexed { i, p ->
+            if (i % 2 == 0) {
+                val t = p.trim('\n')
+                if (t.isNotBlank()) col.addView(TextView(this).apply {
+                    this.text = mdSpans(t); textSize = 16.5f; setTextColor(C.text); typeface = face(); setLineSpacing(0f, 1.18f); setTextIsSelectable(true)
+                })
+            } else {
+                val hasNl = p.contains('\n')
+                val lang = if (hasNl) p.substringBefore('\n').trim().take(14) else ""
+                col.addView(codeBlock((if (hasNl) p.substringAfter('\n') else p).trimEnd(), lang))
+            }
+        }
+        return col
+    }
+
+    private fun thumb(f: File, px: Int): Bitmap? = try {
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(f.path, o)
+        var s = 1
+        while (minOf(o.outWidth, o.outHeight) / (s * 2) >= px) s *= 2
+        BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = s })
+    } catch (e: Exception) { null }
+
+    private fun attRow(text: String): View {
+        val r = LinearLayout(this)
+        text.lines().filter { it.isNotBlank() }.forEach { rel ->
+            val x = try { sb.f(rel) } catch (e: Exception) { null }
+            val bm = if (x != null && x.exists() && isImg(x)) thumb(x, dp(72)) else null
+            val v: View = if (bm != null) ImageView(this).apply { setImageBitmap(bm); scaleType = ImageView.ScaleType.CENTER_CROP }
+            else LinearLayout(this).apply {
+                gravity = Gravity.CENTER; orientation = LinearLayout.VERTICAL; setBackgroundColor(C.card2); setPadding(dp(4), dp(4), dp(4), dp(4))
+                addView(ic("ic_file", C.sub, 22), lp(dp(22), dp(22)))
+                addView(tv(rel.substringAfterLast('/').take(10), 10f, C.sub).apply { gravity = Gravity.CENTER; maxLines = 1 })
+            }
+            if (x != null) v.onTap { preview(rel) }
+            r.addView(v, lp(dp(72), dp(72)).apply { leftMargin = dp(6) })
+        }
+        return HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false; addView(r) }
+    }
+
+    private fun addBubble(role: String, text: String, save: Boolean = true) {
+        if (save) ui.add(role to text)
+        when (role) {
+            "user" -> {
+                val b = tv(text, 16.5f, C.text).apply { typeface = face(); setBackgroundColor(C.card2); setPadding(dp(14), dp(10), dp(14), dp(10)); setTextIsSelectable(true) }
+                list.addView(b, lp(WRAP, WRAP).apply { gravity = Gravity.END; setMargins(dp(56), dp(8), dp(14), dp(8)) })
+            }
+            "ai" -> {
+                val c = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                c.addView(aiView(text))
+                c.addView(ic("ic_logo", C.accent, 20), lp(dp(20), dp(20)).apply { topMargin = dp(8) })
+                list.addView(c, lp().apply { setMargins(dp(16), dp(10), dp(16), dp(10)) })
+            }
+            "att" -> list.addView(attRow(text), lp(WRAP, WRAP).apply { gravity = Gravity.END; setMargins(dp(56), dp(8), dp(14), dp(0)) })
+            else -> list.addView(tv(text, 13.5f, C.sub), lp().apply { setMargins(dp(16), dp(4), dp(16), dp(4)) })
+        }
+        scrollDown()
+    }
+
+    private fun stepLine(label: String) {
+        if (stepsBody == null) {
+            val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)) }
+            val ht = tv("", 14f, C.sub)
+            val chev = ic("ic_chev", C.sub, 16)
+            head.addView(ic("ic_terminal", C.sub, 16), lp(dp(16), dp(16)).apply { rightMargin = dp(8) })
+            head.addView(ht)
+            head.addView(chev, lp(dp(16), dp(16)).apply { leftMargin = dp(4) })
+            val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE; setPadding(dp(40), 0, dp(16), dp(6)) }
+            head.onTap {
+                val open = body.visibility != View.VISIBLE
+                body.visibility = if (open) View.VISIBLE else View.GONE
+                chev.rotation = if (open) 90f else 0f
+            }
+            list.addView(head, lp(WRAP, WRAP))
+            list.addView(body, lp())
+            stepsBody = body; stepsHead = ht
+        }
+        stepsN++
+        stepsHead?.text = if (stepsN == 1) "Ran 1 step" else "Ran $stepsN steps"
+        stepsBody?.addView(tv(label, 13f, C.hint))
+        scrollDown()
+    }
+
     private fun kindOf(x: File): String = when (x.extension.lowercase()) {
         in imgExt -> "Image"
         "zip", "jar" -> "Archive"
@@ -407,136 +690,349 @@ class MainActivity : Activity() {
     }
 
     private fun iconOf(x: File): String = when (kindOf(x)) {
-        "Image" -> "🖼"; "Archive" -> "📦"; "Document" -> "📄"; "Web page" -> "🌐"; "Text" -> "📝"; "Code" -> "💻"; else -> "📎"
+        "Image" -> "ic_photo"; "Archive" -> "ic_archive"; "Document" -> "ic_file"; "Web page" -> "ic_web"; "Text" -> "ic_note"; "Code" -> "ic_code"; else -> "ic_file"
     }
 
-    private fun thumb(f: File, px: Int): Bitmap? = try {
-        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(f.path, o)
-        var s = 1
-        while (minOf(o.outWidth, o.outHeight) / (s * 2) >= px) s *= 2
-        BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = s })
-    } catch (e: Exception) { null }
-
-    private fun addCard(rel: String, persist: Boolean = true) {
-        val x = sb.f(rel)
-        if (!x.exists()) return
-        if (persist) ui.add("file" to rel)
-        val bm = if (isImg(x)) thumb(x, dp(64)) else null
+    private fun fileCard(rel: String, deletable: Boolean = false, onDeleted: () -> Unit = {}): View? {
+        val x = try { sb.f(rel) } catch (e: Exception) { return null }
+        if (!x.exists()) return null
+        val bm = if (isImg(x)) thumb(x, dp(72)) else null
         val tile: View = if (bm != null) ImageView(this).apply { setImageBitmap(bm); scaleType = ImageView.ScaleType.CENTER_CROP }
-        else TextView(this).apply { text = iconOf(x); textSize = 26f; gravity = Gravity.CENTER; setBackgroundColor(C.card2) }
-        tile.outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(v: View, o: Outline) { o.setRoundRect(0, 0, v.width, v.height, dp(14).toFloat()) }
-        }
-        tile.clipToOutline = true
+        else FrameLayout(this).apply { setBackgroundColor(C.card2); addView(ic(iconOf(x), C.accent, 26), fl(dp(26), dp(26), Gravity.CENTER)) }
         val info = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), 0, dp(6), 0) }
-        info.addView(TextView(this).apply { text = pretty(x); textSize = 16f; setTextColor(C.text); maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
-        info.addView(TextView(this).apply { text = "${kindOf(x)} · ${x.extension.uppercase()} · ${size(x.length())}"; textSize = 13f; setTextColor(C.sub); setPadding(0, dp(3), 0, 0) })
-        val card = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; background = round(C.card, 20); setPadding(dp(12), dp(12), dp(6), dp(12)); setOnClickListener { preview(rel) } }
-        card.addView(tile, LinearLayout.LayoutParams(dp(64), dp(64)))
-        card.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        card.addView(chip("⬇") { save(rel) })
-        card.addView(chip("📤") { share(rel) })
-        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        lp.setMargins(dp(12), dp(5), dp(12), dp(5))
-        list.addView(card, lp); scrollDown()
+        info.addView(tv(pretty(x), 16f, C.text).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END })
+        info.addView(tv("${kindOf(x)} \u00b7 ${x.extension.uppercase()} \u00b7 ${size(x.length())}", 13f, C.sub).apply { setPadding(0, dp(3), 0, 0) })
+        val card = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; background = box(C.card, C.line); setPadding(dp(10), dp(10), dp(4), dp(10)); onTap { preview(rel) } }
+        card.addView(tile, lp(dp(64), dp(64)))
+        card.addView(info, lp(0, WRAP, 1f))
+        card.addView(iconBtn("ic_download", C.sub) { save(rel) })
+        card.addView(iconBtn("ic_share", C.sub) { share(rel) })
+        if (deletable) card.addView(iconBtn("ic_trash", C.sub) { confirm("Delete ${x.name}?", "Delete") { x.delete(); onDeleted() } })
+        return card
     }
 
     private fun renderChat() {
-        list.removeAllViews()
-        ui.toList().forEach { (r, t) -> if (r == "file") addCard(t, false) else addBubble(r, t, false) }
+        list.removeAllViews(); stepsBody = null
+        if (ui.isEmpty()) { if (cmode == "") emptyState() }
+        else ui.toList().forEach { (r, t) ->
+            if (r == "file") fileCard(t)?.let { c -> list.addView(c, lp().apply { setMargins(dp(14), dp(5), dp(14), dp(5)) }) }
+            else addBubble(r, t, false)
+        }
+        titleV.text = chatTitle(); updChip()
     }
 
-    private fun updLive() { liveBtn.text = if (live) "🔴" else "🎧"; if (live) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
-    private fun updAtt() { attInfo.visibility = if (pending.isEmpty()) View.GONE else View.VISIBLE; attInfo.text = "📎 " + pending.joinToString(", ") { it.name } }
+    // ───────────── chats ─────────────
+    private fun chatTitle(): String =
+        ui.firstOrNull { it.first == "user" }?.second?.lines()?.firstOrNull()?.take(40)
+            ?: ui.firstOrNull { it.first == "att" }?.second?.lines()?.firstOrNull()?.substringAfterLast('/')?.take(40)
+            ?: "14AI"
 
-    // ───────────── chats / history ─────────────
     private fun saveChat() {
-        if (ui.none { it.first == "user" }) return
-        val title = ui.first { it.first == "user" }.second.lines().first().take(40)
+        if (ui.none { it.first == "user" || it.first == "att" }) return
         val arr = JSONArray(); ui.forEach { arr.put(JSONArray().put(it.first).put(it.second)) }
-        File(st.chatsDir, "$chatId.json").writeText(JSONObject().put("title", title).put("cm", cmode).put("ui", arr).toString())
+        File(st.chatsDir, "$chatId.json").writeText(JSONObject().put("title", chatTitle()).put("cm", cmode).put("ui", arr).toString())
     }
 
     private fun newChat() {
-        saveChat(); chatId = newId(); ui.clear(); pending.clear(); updAtt(); cmode = ""; updMode(); showPicker()
+        saveChat(); chatId = newId(); ui.clear(); pending.clear(); refreshAtt(); updSend()
+        cmode = ""; stepsBody = null
+        emptyState(); titleV.text = "14AI"; updChip()
+        if (onBack != null) backToMain()
     }
 
-    private fun history() {
-        val cs = st.chats()
-        if (cs.isEmpty()) { toast("No saved chats yet"); return }
-        AlertDialog.Builder(this, DARK).setTitle("🕘 Chats")
-            .setItems(cs.map { it.second }.toTypedArray()) { _, i ->
-                val id = cs[i].first
-                AlertDialog.Builder(this, DARK).setItems(arrayOf("Open", "Delete")) { _, j ->
-                    if (j == 0) {
-                        saveChat()
-                        val o = JSONObject(File(st.chatsDir, "$id.json").readText())
-                        chatId = id; ui.clear()
-                        cmode = o.optString("cm", "agent").ifBlank { "agent" }; updMode()
-                        val a = o.getJSONArray("ui")
-                        for (k in 0 until a.length()) ui.add(a.getJSONArray(k).getString(0) to a.getJSONArray(k).getString(1))
-                        renderChat()
-                    } else {
-                        File(st.chatsDir, "$id.json").delete(); toast("Deleted")
-                    }
-                }.show()
-            }.show()
+    private fun openChat(cid: String) {
+        try {
+            saveChat()
+            val o = JSONObject(File(st.chatsDir, "$cid.json").readText())
+            chatId = cid; ui.clear()
+            cmode = o.optString("cm", "agent").ifBlank { "agent" }
+            val a = o.getJSONArray("ui")
+            for (k in 0 until a.length()) ui.add(a.getJSONArray(k).getString(0) to a.getJSONArray(k).getString(1))
+            backToMain(); renderChat()
+        } catch (e: Exception) { toast("Couldn't open that chat") }
     }
 
-    // ───────────── files / memory ─────────────
-    private fun files() {
-        val fs = sb.root.walkTopDown().filter { it.isFile }.toList()
-        if (fs.isEmpty()) { toast("Sandbox is empty"); return }
-        AlertDialog.Builder(this, DARK).setTitle("📁 Sandbox (${fs.size})")
-            .setItems(fs.map { "${sb.rel(it)}  ·  ${size(it.length())}" }.toTypedArray()) { _, i ->
-                val rel = sb.rel(fs[i])
-                AlertDialog.Builder(this, DARK).setTitle(rel).setItems(arrayOf("👁 Preview", "⬇ Save to Downloads", "📤 Share", "🗑 Delete")) { _, j ->
-                    when (j) { 0 -> preview(rel); 1 -> save(rel); 2 -> share(rel); else -> { sb.f(rel).delete(); toast("Deleted") } }
-                }.show()
-            }.show()
+    private fun chatsScreen() {
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(20)) }
+        fun fill() {
+            body.removeAllViews()
+            val cs = st.chats()
+            if (cs.isEmpty()) body.addView(tv("No chats yet.", 15f, C.sub).apply { setPadding(dp(8), dp(24), 0, 0) })
+            cs.forEach { (cid, title) ->
+                val r = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; background = box(C.card, C.line); setPadding(dp(16), 0, dp(4), 0); onTap { openChat(cid) } }
+                r.addView(tv(title, 16.5f, C.text).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER_VERTICAL }, lp(0, dp(56), 1f))
+                r.addView(iconBtn("ic_trash", C.sub) { confirm("Delete this chat?", "Delete") { File(st.chatsDir, "$cid.json").delete(); if (cid == chatId) { chatId = newId(); ui.clear() }; fill() } })
+                body.addView(r, lp().apply { bottomMargin = dp(8) })
+            }
+        }
+        fill()
+        showScreen("Chats", scrolled(body), { backToMain() })
     }
 
-    private fun memoryDlg() {
-        val et = EditText(this).apply { setText(st.memory()); setTextColor(Color.WHITE); minLines = 8; gravity = Gravity.TOP; hint = "Nothing yet. The AI saves lasting facts here (memory.md)." }
-        AlertDialog.Builder(this, DARK).setTitle("🧠 memory.md").setView(et)
-            .setPositiveButton("Save") { _, _ -> st.memFile.writeText(et.text.toString()); toast("Memory saved ✅") }
-            .setNegativeButton("Close", null).show()
+    private fun filesScreen() {
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(8), dp(12), dp(20)) }
+        fun fill() {
+            body.removeAllViews()
+            val fs = sb.root.walkTopDown().filter { it.isFile && sb.rel(it) != "memory.md" }.sortedByDescending { it.lastModified() }.toList()
+            if (fs.isEmpty()) body.addView(tv("No files yet. Ask 14AI to make something.", 15f, C.sub).apply { setPadding(dp(8), dp(24), dp(8), 0) })
+            fs.forEach { f -> fileCard(sb.rel(f), true) { fill() }?.let { body.addView(it, lp().apply { bottomMargin = dp(8) }) } }
+        }
+        fill()
+        showScreen("Files", scrolled(body), { backToMain() })
+    }
+
+    private fun memoryScreen() {
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(20)) }
+        body.addView(tv("14AI saves lasting facts about you here (memory.md). Edit it freely.", 14f, C.sub).apply { setPadding(0, 0, 0, dp(10)) })
+        val et = EditText(this).apply {
+            setText(st.memory()); setTextColor(C.text); setHintTextColor(C.hint); hint = "Nothing saved yet."
+            background = box(C.card, C.line); setPadding(dp(14), dp(12), dp(14), dp(12)); minLines = 12; gravity = Gravity.TOP; textSize = 15f
+        }
+        body.addView(et, lp())
+        body.addView(btn("Save", C.accent, Color.WHITE) { st.memFile.writeText(et.text.toString()); toast("Memory saved"); backToMain() })
+        showScreen("Memory", scrolled(body), { backToMain() })
+    }
+    // ───────────── settings ─────────────
+    private fun paste(et: EditText) {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        val t = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()?.trim()
+        if (!t.isNullOrBlank()) et.setText(t) else toast("Clipboard is empty")
+    }
+
+    private fun formPage(title: String, items: List<Triple<String, String, String>>, note: String? = null, multi: Set<String> = emptySet(), header: ((LinearLayout) -> Unit)? = null, back: () -> Unit) {
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(28)) }
+        if (note != null) body.addView(tv(note, 14f, C.sub).apply { setPadding(0, 0, 0, dp(6)) })
+        header?.invoke(body)
+        val ets = items.map { (k, l, d) ->
+            body.addView(tv(l, 13f, C.sub).apply { setPadding(0, dp(14), 0, dp(6)) })
+            val et = EditText(this).apply {
+                setText(st.get(k, "")); hint = d; setTextColor(C.text); setHintTextColor(C.hint); background = null; textSize = 15f
+                setPadding(dp(12), dp(10), dp(8), dp(10))
+                if (k in multi) { minLines = 6; gravity = Gravity.TOP } else setSingleLine(true)
+            }
+            val r = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; background = box(C.card, C.line) }
+            r.addView(et, lp(0, WRAP, 1f))
+            r.addView(iconBtn("ic_paste", C.sub) { paste(et) })
+            body.addView(r, lp())
+            et
+        }
+        body.addView(gap(18))
+        body.addView(btn("Save", C.accent, Color.WHITE) {
+            items.forEachIndexed { i, f -> st.put(f.first, ets[i].text.toString()) }
+            toast("Saved"); updChip(); back()
+        })
+        showScreen(title, scrolled(body), back)
+    }
+
+    private fun keysSummary(): String {
+        val n = mutableListOf<String>()
+        if (st.get("grkey").isNotBlank()) n.add("Groq")
+        if (st.get("gkey").isNotBlank()) n.add("Gemini")
+        if (st.get("qkey").isNotBlank()) n.add("Qwen")
+        return if (n.isEmpty()) "No key yet" else n.joinToString(", ")
+    }
+
+    private fun keysPage(back: () -> Unit) = formPage(
+        "API keys",
+        listOf(
+            Triple("grkey", "Groq API key (recommended)", "gsk_..."),
+            Triple("gkey", "Gemini API key (optional)", "AIza..."),
+            Triple("qkey", "Qwen API key (optional)", "sk-...")
+        ),
+        "Tap the paste button next to a field to paste from your clipboard. One key is enough.\nGroq: console.groq.com/keys\nGemini: aistudio.google.com/apikey",
+        back = back
+    )
+
+    private fun modelsPage(): Unit = formPage(
+        "Models",
+        listOf(
+            Triple("grmodel", "Groq model, Agent", "openai/gpt-oss-120b"),
+            Triple("grcmodel", "Groq model, Coding", "moonshotai/kimi-k2-instruct-0905"),
+            Triple("grvmodel", "Groq model, images", "meta-llama/llama-4-scout-17b-16e-instruct"),
+            Triple("gmodel", "Gemini model", "gemini-2.5-flash"),
+            Triple("qmodel", "Qwen model, Agent", "qwen-plus"),
+            Triple("cmodel", "Qwen model, Coding", "qwen3-coder-plus"),
+            Triple("qbase", "Qwen base URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+            Triple("imodel", "Image model (Gemini)", "gemini-2.5-flash-image")
+        ),
+        "Leave a field empty to use its default. If a model stops working, paste a newer model name here.",
+        header = { body ->
+            body.addView(row("ic_model", "AI provider", st.get("prov", "Auto")) {
+                sheet("Provider") { col, close ->
+                    listOf("Auto", "Groq", "Gemini", "Qwen").forEach { p -> opt(col, p, null, st.get("prov", "Auto") == p) { st.put("prov", p); close(); modelsPage() } }
+                }
+            })
+        },
+        back = { settingsScreen() }
+    )
+
+    private fun capPage() {
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(8), dp(14), dp(28)) }
+        fun cp(k: String, icon: String, title: String, sub: String) =
+            body.addView(row(icon, title, sub, trailing = toggle(cap(k)) { st.put("cap_$k", if (it) "1" else "0") }))
+        cp("web", "ic_web", "Web search", "Search the internet and read pages")
+        cp("py", "ic_terminal", "Python", "Run Python to draw images and process files")
+        cp("img", "ic_photo", "Image generation", "Create photo-style images with Gemini")
+        cp("mem", "ic_memory", "Memory", "Remember lasting facts in memory.md")
+        showScreen("Capabilities", scrolled(body), { settingsScreen() })
+    }
+
+    private fun privacyPage() {
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(8), dp(14), dp(28)) }
+        body.addView(row("ic_trash", "Delete all chats", "Removes every saved conversation") {
+            confirm("Delete all chats?", "Delete") { st.chatsDir.listFiles()?.forEach { it.delete() }; chatId = newId(); ui.clear(); toast("Chats deleted") }
+        })
+        body.addView(row("ic_trash", "Clear memory", "Erases memory.md") {
+            confirm("Clear memory?", "Clear") { st.memFile.delete(); toast("Memory cleared") }
+        })
+        body.addView(row("ic_trash", "Delete all files", "Empties the sandbox") {
+            confirm("Delete every file in the sandbox?", "Delete") { sb.root.listFiles()?.forEach { if (it.name != "memory.md") it.deleteRecursively() }; toast("Files deleted") }
+        })
+        showScreen("Privacy", scrolled(body), { settingsScreen() })
+    }
+
+    private fun colorBlock(): View {
+        val b = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.card); setPadding(dp(16), dp(14), dp(16), dp(16)) }
+        val head = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        head.addView(ic("ic_moon", C.text, 22), lp(dp(22), dp(22)).apply { rightMargin = dp(16) })
+        head.addView(tv("Color mode", 17f, C.text))
+        b.addView(head)
+        val cur = st.get("cm", "Dark")
+        val tiles = LinearLayout(this).apply { setPadding(0, dp(12), 0, 0) }
+        listOf("Light", "Dark", "System").forEach { k ->
+            val c = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+                onTap { st.put("cm", k); applyTheme(); themeDirty = true; settingsScreen() }
+            }
+            c.addView(PreviewView(this, k, cur == k, C.accent), lp(MATCH, dp(70)))
+            c.addView(tv(k, 15f, if (cur == k) C.accent else C.sub).apply { setPadding(0, dp(6), 0, 0) })
+            tiles.addView(c, lp(0, WRAP, 1f).apply { setMargins(dp(4), 0, dp(4), 0) })
+        }
+        b.addView(tiles)
+        val sw = LinearLayout(this).apply { setPadding(0, dp(16), 0, 0); gravity = Gravity.CENTER_VERTICAL }
+        sw.addView(tv("Accent", 15f, C.sub), lp(0, WRAP, 1f))
+        listOf("D97757", "4C8DFF", "35D49A", "9B7BFF", "FF5C8A").forEach { hx ->
+            val s = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#$hx")); onTap { st.put("accent", hx); applyTheme(); themeDirty = true; settingsScreen() } }
+            if (C.accent == (0xFF000000 or hx.toLong(16)).toInt()) s.addView(ic("ic_check", Color.WHITE, 18), fl(dp(18), dp(18), Gravity.CENTER))
+            sw.addView(s, lp(dp(32), dp(32)).apply { leftMargin = dp(8) })
+        }
+        b.addView(sw)
+        return b
+    }
+
+    private fun fontSheet(): Unit = sheet("Font style") { col, close ->
+        listOf("Serif", "Sans", "Mono").forEach { f ->
+            opt(col, f, null, st.get("font", "Serif") == f) { st.put("font", f); close(); renderChat(); settingsScreen() }
+        }
+    }
+
+    private fun profilePage(): Unit = formPage(
+        "Profile",
+        listOf(Triple("name", "Name", "Your name")),
+        if (st.get("method") == "guest") "Guest account on this phone." else "Signed in as ${st.get("email")}",
+        back = { settingsScreen() }
+    )
+
+    private fun settingsScreen() {
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), dp(6), dp(14), dp(28)) }
+        fun group(vararg v: View) { v.forEach { body.addView(it) }; body.addView(gap(12)) }
+        val who = if (st.get("method") == "guest") "Guest" else st.get("name").ifBlank { st.get("email") }
+        group(row("ic_user", "Profile", who) { profilePage() })
+        group(
+            row("ic_key", "API keys", keysSummary()) { keysPage { settingsScreen() } },
+            row("ic_model", "Models", st.get("prov", "Auto")) { modelsPage() }
+        )
+        val nCap = listOf("web", "py", "img", "mem").count { cap(it) }
+        group(
+            row("ic_bolt", "Capabilities", "$nCap enabled") { capPage() },
+            row("ic_persona", "Personality", st.get("persona", "Friendly")) { personaSheet() },
+            row("ic_edit", "Custom instructions", if (st.get("custom").isBlank()) "None" else "On") {
+                formPage("Custom instructions", listOf(Triple("custom", "Always follow these", "Example: answer in French")), "Added to every chat.", setOf("custom")) { settingsScreen() }
+            }
+        )
+        group(
+            colorBlock(),
+            row("ic_font", "Font style", st.get("font", "Serif")) { fontSheet() },
+            row("ic_wave", "Voice and dictation", st.get("lang", "en-US")) {
+                formPage("Voice and dictation", listOf(Triple("lang", "Language (en-US, fr-FR, ar-DZ)", "en-US")), "Used for the mic and for 14AI's spoken voice.") { settingsScreen() }
+            }
+        )
+        group(
+            row("ic_haptic", "Haptic feedback", trailing = toggle(st.get("haptic", "1") == "1") { st.put("haptic", if (it) "1" else "0") }),
+            row("ic_shield", "Privacy") { privacyPage() }
+        )
+        group(row("ic_logout", "Log out", tint = C.accent, chevron = false) { confirm("Log out of 14AI?", "Log out") { signOut() } })
+        showScreen("Settings", scrolled(body), { backToMain() })
+    }
+
+    // ───────────── login ─────────────
+    private fun field(h: String, type: Int) = EditText(this).apply {
+        hint = h; setHintTextColor(C.hint); setTextColor(C.text); background = box(C.card, C.line)
+        setPadding(dp(16), dp(14), dp(16), dp(14)); inputType = type; setSingleLine(true)
+        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(10) }
+    }
+
+    private fun showLogin() {
+        onBack = null
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(28), dp(64), dp(28), dp(28)); gravity = Gravity.CENTER_HORIZONTAL }
+        col.addView(ic("ic_logo", C.accent, 72), lp(dp(72), dp(72)))
+        col.addView(tv("14AI", 40f, C.text, serif = true).apply { gravity = Gravity.CENTER; setPadding(0, dp(10), 0, 0) })
+        col.addView(tv("Your personal AI agent", 16f, C.sub).apply { gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(28)) })
+        val em = field("Email", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS)
+        val pw = field("Password (6+ characters)", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        val err = tv("", 13f, 0xFFFF8A80.toInt()).apply { gravity = Gravity.CENTER; setPadding(0, dp(10), 0, 0) }
+        val go: (Boolean) -> Unit = { create ->
+            val e = em.text.toString(); val p = pw.text.toString()
+            err.text = "One moment"
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) { Auth.email(st, e, p, create) }
+                    enter(Auth.uid(e), e.trim().lowercase(), e.trim().substringBefore("@"), "email")
+                } catch (x: Exception) { err.text = x.message ?: "Something went wrong" }
+            }
+        }
+        col.addView(em); col.addView(pw); col.addView(err)
+        col.addView(btn("Sign in", C.accent, Color.WHITE) { go(false) })
+        col.addView(btn("Create account", C.card2, C.text) { go(true) })
+        col.addView(tv("Continue as guest", 15f, C.sub).apply { gravity = Gravity.CENTER; setPadding(0, dp(24), 0, dp(10)); onTap { enter("guest", "", "Guest", "guest") } })
+        col.addView(tv("Login setup (optional)", 13f, C.accent).apply {
+            gravity = Gravity.CENTER; setPadding(0, dp(6), 0, dp(6))
+            onTap { formPage("Login setup", listOf(Triple("fbkey", "Firebase Web API key (optional)", "AIza...")), "Email login works with no setup as an account on this phone. Paste a Firebase Web API key to use real cloud accounts.") { showLogin() } }
+        })
+        setContentView(ScrollView(this).apply { isFillViewport = true; setBackgroundColor(C.bg); addView(col) })
     }
 
     // ───────────── preview / save / share ─────────────
     private fun preview(rel: String) {
-        val x = sb.f(rel); val ext = x.extension.lowercase()
+        val x = try { sb.f(rel) } catch (e: Exception) { return }
+        if (!x.exists()) return
+        val ext = x.extension.lowercase()
         val body: View = when {
             ext in imgExt || ext == "svg" || ext == "html" || ext == "htm" -> WebView(this).apply {
-                setBackgroundColor(Color.parseColor("#111111"))
+                setBackgroundColor(0xFF111111.toInt())
                 settings.javaScriptEnabled = true; settings.allowFileAccess = true
                 settings.builtInZoomControls = true; settings.displayZoomControls = false
                 settings.useWideViewPort = true; settings.loadWithOverviewMode = true
-                if (ext in imgExt) loadDataWithBaseURL("file://${x.parent}/", "<body style='margin:0;background:#111'><img src='${x.name}' style='max-width:100%'></body>", "text/html", "utf-8", null)
+                if (ext in imgExt) loadDataWithBaseURL("file://${x.parent}/", "<body style='margin:0;background:#111'><img src='${Uri.encode(x.name)}' style='max-width:100%'></body>", "text/html", "utf-8", null)
                 else loadUrl("file://${x.path}")
             }
-            ext in textExt -> ScrollView(this).apply {
-                addView(TextView(context).apply { text = x.readText().take(30000); typeface = Typeface.MONOSPACE; textSize = 12f; setTextColor(C.text); setTextIsSelectable(true); setPadding(dp(16), dp(16), dp(16), dp(16)) })
-            }
-            ext == "zip" || ext == "jar" -> ScrollView(this).apply {
+            ext in textExt -> scrolled(TextView(this).apply { text = x.readText().take(30000); typeface = Typeface.MONOSPACE; textSize = 12.5f; setTextColor(C.text); setTextIsSelectable(true); setPadding(dp(16), dp(16), dp(16), dp(16)) })
+            ext == "zip" || ext == "jar" -> scrolled(TextView(this).apply {
                 val names = try { ZipFile(x).use { z -> z.entries().toList().map { it.name } } } catch (e: Exception) { emptyList() }
-                addView(TextView(context).apply {
-                    text = "📦 ${names.size} entries\n\n" + names.take(120).joinToString("\n") + if (names.size > 120) "\n…" else ""
-                    typeface = Typeface.MONOSPACE; textSize = 12f; setTextColor(C.text); setPadding(dp(16), dp(16), dp(16), dp(16))
-                })
-            }
-            else -> TextView(this).apply { text = "${iconOf(x)}\nNo preview for .$ext files\nUse ⬇ to save or 📤 to share"; gravity = Gravity.CENTER; textSize = 15f; setTextColor(C.sub) }
+                text = "${names.size} entries\n\n" + names.take(150).joinToString("\n") + if (names.size > 150) "\n..." else ""
+                typeface = Typeface.MONOSPACE; textSize = 12.5f; setTextColor(C.text); setPadding(dp(16), dp(16), dp(16), dp(16))
+            })
+            else -> tv("No preview for .$ext files. Use download or share.", 15f, C.sub).apply { gravity = Gravity.CENTER; setPadding(dp(24), dp(48), dp(24), 0) }
         }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(C.bg) }
-        val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(10), dp(8), dp(10)) }
+        val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(4), dp(4), dp(4), dp(4)) }
         lateinit var dlg: Dialog
-        top.addView(chip("✕") { dlg.dismiss() })
-        top.addView(TextView(this).apply { text = pretty(x); textSize = 17f; setTextColor(C.text); typeface = Typeface.DEFAULT_BOLD; maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        top.addView(chip("⬇") { save(rel) })
-        top.addView(chip("📤") { share(rel) })
+        top.addView(iconBtn("ic_close") { dlg.dismiss() })
+        top.addView(tv(pretty(x), 18f, C.text, serif = true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END; setPadding(dp(8), 0, 0, 0) }, lp(0, WRAP, 1f))
+        top.addView(iconBtn("ic_download") { save(rel) })
+        top.addView(iconBtn("ic_share") { share(rel) })
         col.addView(top)
-        col.addView(body, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        col.addView(body, lp(MATCH, 0, 1f))
         dlg = Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen).apply { setContentView(col); show() }
     }
 
@@ -570,36 +1066,96 @@ class MainActivity : Activity() {
                 val d = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "14AI").apply { mkdirs() }
                 x.copyTo(File(d, x.name), true)
             }
-            toast("Saved to Downloads/14AI ✅")
+            toast("Saved to Downloads/14AI")
         } catch (e: Exception) { toast("Save failed: ${e.message}") }
     }
 
-    // ───────────── attachments ─────────────
-    private fun pick() {
-        startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply {
-            type = "*/*"; putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true); addCategory(Intent.CATEGORY_OPENABLE)
-        }, 1)
+    // ───────────── attachments (files, photos, camera, paste) ─────────────
+    private fun pickFiles(mime: String) {
+        try {
+            startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply {
+                type = mime; putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true); addCategory(Intent.CATEGORY_OPENABLE)
+            }, 1)
+        } catch (e: Exception) { toast("No file picker found") }
+    }
+
+    private fun camera() {
+        try {
+            val f = File(sb.root, "uploads/camera_${System.currentTimeMillis()}.jpg").apply { parentFile?.mkdirs() }
+            camFile = f
+            val uri = Uri.Builder().scheme("content").authority("com.amir.ai14.share").path("uploads/" + f.name).build()
+            val i = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(MediaStore.EXTRA_OUTPUT, uri); clipData = ClipData.newRawUri("", uri)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivityForResult(i, 2)
+        } catch (e: Exception) { toast("No camera app available") }
+    }
+
+    private fun pasteImages() {
+        val clip = (getSystemService(CLIPBOARD_SERVICE) as ClipboardManager).primaryClip
+        val us = if (clip == null) emptyList() else (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+        if (us.isEmpty()) toast("No image on the clipboard") else addUris(us)
+    }
+
+    private fun copyIn(u: Uri): File {
+        var name = ""
+        contentResolver.query(u, null, null, null, null)?.use { c ->
+            if (c.moveToFirst()) { val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME); if (i >= 0) name = c.getString(i) ?: "" }
+        }
+        if (name.isBlank()) {
+            val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(contentResolver.getType(u) ?: "") ?: "png"
+            name = "pasted_${System.currentTimeMillis()}.$ext"
+        }
+        var dest = File(sb.root, "uploads/" + name.replace("/", "_")).apply { parentFile?.mkdirs() }
+        if (dest.exists()) dest = File(dest.parentFile, "${System.currentTimeMillis()}_${dest.name}")
+        contentResolver.openInputStream(u)!!.use { ins -> dest.outputStream().use { ins.copyTo(it) } }
+        return dest
+    }
+
+    private fun addUris(us: List<Uri>) {
+        scope.launch {
+            val added = withContext(Dispatchers.IO) { us.mapNotNull { u -> try { copyIn(u) } catch (e: Exception) { null } } }
+            added.forEach { if (pending.size < 12) pending.add(it) }
+            if (added.size < us.size) toast("Some files couldn't be added")
+            refreshAtt(); updSend()
+        }
+    }
+
+    private fun refreshAtt() {
+        attStrip.removeAllViews()
+        attScroll.visibility = if (pending.isEmpty()) View.GONE else View.VISIBLE
+        pending.toList().forEach { f ->
+            val bm = if (isImg(f)) thumb(f, dp(56)) else null
+            val v: View = if (bm != null) ImageView(this).apply { setImageBitmap(bm); scaleType = ImageView.ScaleType.CENTER_CROP }
+            else LinearLayout(this).apply {
+                gravity = Gravity.CENTER; orientation = LinearLayout.VERTICAL; setBackgroundColor(C.card2); setPadding(dp(4), dp(4), dp(4), dp(4))
+                addView(ic("ic_file", C.sub, 20), lp(dp(20), dp(20)))
+                addView(tv(f.name.take(9), 10f, C.sub).apply { gravity = Gravity.CENTER; maxLines = 1 })
+            }
+            val fr = FrameLayout(this)
+            fr.addView(v, fl(dp(56), dp(56), Gravity.CENTER))
+            fr.addView(FrameLayout(this).apply {
+                setBackgroundColor(0xCC000000.toInt()); addView(ic("ic_close", Color.WHITE, 12), fl(dp(12), dp(12), Gravity.CENTER))
+                onTap { pending.remove(f); refreshAtt(); updSend() }
+            }, fl(dp(20), dp(20), Gravity.TOP or Gravity.END))
+            attStrip.addView(fr, lp(dp(62), dp(62)))
+        }
     }
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(rq: Int, rs: Int, d: Intent?) {
         super.onActivityResult(rq, rs, d)
+        if (rq == 2) {
+            val f = camFile
+            if (rs == RESULT_OK && f != null && f.exists() && f.length() > 0) { pending.add(f); refreshAtt(); updSend() } else f?.delete()
+            return
+        }
         if (rq != 1 || rs != RESULT_OK || d == null) return
         val uris = mutableListOf<Uri>()
         val cd = d.clipData
         if (cd != null) { for (i in 0 until cd.itemCount) uris.add(cd.getItemAt(i).uri) } else { d.data?.let { uris.add(it) } }
-        uris.forEach { u ->
-            try {
-                var name = "file_${System.currentTimeMillis()}"
-                contentResolver.query(u, null, null, null, null)?.use { c ->
-                    if (c.moveToFirst()) { val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME); if (i >= 0) name = c.getString(i) }
-                }
-                val dest = File(sb.root, "uploads/" + name.replace("/", "_")).apply { parentFile?.mkdirs() }
-                contentResolver.openInputStream(u)!!.use { ins -> dest.outputStream().use { ins.copyTo(it) } }
-                pending.add(dest)
-            } catch (e: Exception) { toast("Couldn't add file: ${e.message}") }
-        }
-        updAtt()
+        addUris(uris)
     }
 
     // ───────────── voice + live mode ─────────────
@@ -607,7 +1163,7 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 7 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             if (live) liveListen() else pendingMic?.let { listen(it) }
-        } else { toast("Mic permission is needed for voice 🎤"); stopLive() }
+        } else { toast("Mic permission is needed for voice"); stopLive() }
     }
 
     private fun listen(onText: (String) -> Unit) {
@@ -615,18 +1171,14 @@ class MainActivity : Activity() {
             pendingMic = onText
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 7); return
         }
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) { toast("No speech recognizer on this phone. Install Google app / Speech Services."); stopLive(); return }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) { toast("No speech recognizer on this phone. Install Google app or Speech Services."); stopLive(); setMicOn(false); return }
         rec?.destroy()
         rec = SpeechRecognizer.createSpeechRecognizer(this).also { r ->
             r.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(p: Bundle?) { input.hint = "🎙 Listening…" }
+                override fun onReadyForSpeech(p: Bundle?) { input.hint = "Listening" }
                 override fun onBeginningOfSpeech() {}
                 override fun onRmsChanged(v: Float) {
-                    val o = orb
-                    if (live && o != null && liveState.startsWith("Listening")) {
-                        val s = 1f + (v.coerceIn(0f, 10f) / 10f) * 0.45f
-                        o.animate().scaleX(s).scaleY(s).setDuration(90).start()
-                    }
+                    if (live && liveState.startsWith("Listening")) wave?.amp = 0.12f + v.coerceIn(0f, 10f) / 10f * 0.75f
                 }
                 override fun onBufferReceived(b: ByteArray?) {}
                 override fun onEndOfSpeech() {}
@@ -637,12 +1189,13 @@ class MainActivity : Activity() {
                     }
                 }
                 override fun onResults(p: Bundle?) {
-                    input.hint = "Message 14AI…"
+                    input.hint = "Message 14AI"
                     val t = p?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                    if (!t.isNullOrBlank()) onText(t) else if (live && !busy) relisten()
+                    if (!t.isNullOrBlank()) onText(t) else { setMicOn(false); if (live && !busy) relisten() }
                 }
                 override fun onError(e: Int) {
-                    input.hint = "Message 14AI…"
+                    input.hint = "Message 14AI"
+                    if (!live) setMicOn(false)
                     if (live && !busy && (e == 6 || e == 7 || e == 8)) relisten()
                     else if (live && e != 5) { stopLive(); toast("Voice error $e") }
                 }
@@ -655,55 +1208,52 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun liveListen() { if (live && !busy) { setLive("Listening…"); listen { t -> input.setText(""); send(t, true) } } }
+    private fun liveListen() { if (live && !busy) { setLive("Listening"); listen { t -> input.setText(""); send(t, true) } } }
     private fun relisten() { Handler(Looper.getMainLooper()).postDelayed({ liveListen() }, 500) }
 
     private fun setLive(s: String, sub: String? = null) {
         liveState = s
         liveStatus?.text = s
         if (sub != null) liveSub?.text = sub
-        pulse?.cancel()
-        val o = orb ?: return
-        if (s.startsWith("Thinking") || s.startsWith("Speaking")) {
-            pulse = ValueAnimator.ofFloat(1f, 1.2f).apply {
-                duration = if (s.startsWith("Thinking")) 700L else 450L
-                repeatMode = ValueAnimator.REVERSE; repeatCount = ValueAnimator.INFINITE
-                addUpdateListener { o.scaleX = it.animatedValue as Float; o.scaleY = it.animatedValue as Float }
-                start()
-            }
-        } else { o.animate().scaleX(1f).scaleY(1f).setDuration(120).start() }
+        wave?.amp = when {
+            s.startsWith("Thinking") -> 0.22f
+            s.startsWith("Speaking") -> 0.6f
+            else -> 0.15f
+        }
     }
 
     private fun showLive() {
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setBackgroundColor(C.bg); setPadding(dp(24), dp(56), dp(24), dp(28)) }
-        liveStatus = TextView(this).apply { textSize = 24f; setTextColor(C.text); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER; text = "Listening…" }
-        orb = View(this).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(C.accent) }
-            setOnClickListener { orbTap() }
-        }
-        liveSub = TextView(this).apply { textSize = 15f; setTextColor(C.sub); gravity = Gravity.CENTER; setLineSpacing(0f, 1.15f); text = "Talk to me. Tap the orb to interrupt." }
-        val mid = FrameLayout(this).apply { addView(orb, FrameLayout.LayoutParams(dp(170), dp(170), Gravity.CENTER)) }
-        col.addView(liveStatus)
-        col.addView(mid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        col.addView(ScrollView(this).apply { addView(liveSub) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150)))
-        col.addView(bigBtn("End live mode", C.card2, C.text) { stopLive() })
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setBackgroundColor(C.bg); setPadding(dp(24), dp(20), dp(24), dp(28)) }
+        val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        top.addView(View(this), lp(0, 1, 1f))
+        top.addView(iconBtn("ic_close") { stopLive() })
+        col.addView(top, lp())
+        liveStatus = tv("Listening", 26f, C.text, serif = true).apply { gravity = Gravity.CENTER }
+        col.addView(liveStatus, lp().apply { topMargin = dp(20) })
+        wave = WaveView(this).apply { color = C.accent; onTap { if (liveState.startsWith("Speaking")) { tts?.stop(); liveListen() } }; run(true) }
+        col.addView(FrameLayout(this).apply { addView(wave, fl(MATCH, dp(150), Gravity.CENTER)) }, lp(MATCH, 0, 1f))
+        liveSub = tv("Talk to me. Tap the bars to interrupt.", 15f, C.sub).apply { gravity = Gravity.CENTER; setLineSpacing(0f, 1.15f) }
+        col.addView(scrolled(liveSub!!), lp(MATCH, dp(150)))
+        col.addView(btn("End live mode", C.card2, C.text) { stopLive() })
         liveDlg = Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen).apply {
             setContentView(col); setOnCancelListener { stopLive() }; show()
         }
     }
 
-    private fun orbTap() {
-        if (liveState.startsWith("Speaking")) { tts?.stop(); liveListen() }
+    private fun toggleLive() {
+        if (live) stopLive() else {
+            live = true; window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            showLive(); liveListen()
+        }
     }
-
-    private fun toggleLive() { if (live) stopLive() else { live = true; updLive(); showLive(); liveListen() } }
 
     private fun stopLive() {
         live = false
-        pulse?.cancel(); pulse = null
+        wave?.run(false)
         tts?.stop(); rec?.cancel()
-        liveDlg?.dismiss(); liveDlg = null; liveStatus = null; liveSub = null; orb = null
-        if (::liveBtn.isInitialized) updLive()
+        liveDlg?.dismiss(); liveDlg = null; liveStatus = null; liveSub = null; wave = null
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (::micIcon.isInitialized) setMicOn(false)
     }
 
     private fun speak(t: String) {
@@ -719,38 +1269,61 @@ class MainActivity : Activity() {
         if (busy) return
         val text = text0.trim()
         if (text.isEmpty() && pending.isEmpty()) return
-        if (cmode == "") { cmode = "agent"; updMode(); list.removeAllViews() }
+        if (cmode == "") { cmode = "agent"; updChip(); list.removeAllViews() }
         busy = true; input.setText("")
-        val atts = pending.toList(); pending.clear(); updAtt()
-        val hist = ui.filter { it.first == "user" || it.first == "ai" }.takeLast(20)
-        addBubble("user", text + if (atts.isNotEmpty()) "\n📎 " + atts.joinToString { it.name } else "")
-        if (live) setLive("Thinking…", "You: $text")
+        val atts = pending.toList(); pending.clear(); refreshAtt(); updSend()
+        val hist = ui.filter { it.first == "user" || it.first == "ai" }.takeLast(14)
+        if (atts.isNotEmpty()) addBubble("att", atts.joinToString("\n") { sb.rel(it) })
+        if (text.isNotEmpty()) addBubble("user", text)
+        titleV.text = chatTitle()
+        stepsBody = null; stepsN = 0
+        val think = tv("Thinking", 14f, C.sub).apply { setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        list.addView(think); scrollDown()
+        if (live) setLive("Thinking", "You: $text")
         scope.launch {
-            val reply = try { withContext(Dispatchers.IO) { agent(text, atts, spoken, hist) } } catch (e: Exception) { "⚠️ ${e.message}" }
+            val reply = try {
+                withContext(Dispatchers.IO) { agent(text.ifBlank { "Please look at the attached files." }, atts, spoken, hist) }
+            } catch (e: Exception) { "Error: ${e.message}" }
+            list.removeView(think)
             addBubble("ai", reply)
-            sb.produced.take(12).forEach { addCard(it) }
+            sb.produced.take(12).forEach { r ->
+                fileCard(r)?.let { c -> ui.add("file" to r); list.addView(c, lp().apply { setMargins(dp(14), dp(5), dp(14), dp(5)) }) }
+            }
+            scrollDown()
             saveChat(); busy = false
-            if (spoken && live) { setLive("Speaking…", reply); speak(reply) } else if (live) liveListen()
+            if (live) { if (spoken) { setLive("Speaking", reply); speak(reply) } else liveListen() }
         }
     }
 
-    private fun pick(img: Boolean): String {
-        val g = st.get("gkey").isNotBlank(); val q = st.get("qkey").isNotBlank(); val pt = st.get("ptoken").isNotBlank()
-        if (pt) return "puter"
-        if (cmode == "coding") return if (q) "qwen" else "gemini"
-        if (img) return "gemini"
-        return if (g) "gemini" else "qwen"
+    private fun provKey(p: String) = when (p) { "groq" -> "grkey"; "gemini" -> "gkey"; else -> "qkey" }
+
+    private fun pickProv(): String {
+        val order = when (st.get("prov", "Auto")) {
+            "Groq" -> listOf("groq", "gemini", "qwen")
+            "Gemini" -> listOf("gemini", "groq", "qwen")
+            "Qwen" -> listOf("qwen", "groq", "gemini")
+            else -> listOf("groq", "gemini", "qwen")
+        }
+        return order.firstOrNull { st.get(provKey(it)).isNotBlank() } ?: order[0]
     }
 
-    private fun call(p: String, msgs: JSONArray, tools: JSONArray?): JSONObject {
-        val gem = p == "gemini"; val pu = p == "puter"
-        val key = st.get(if (pu) "ptoken" else if (gem) "gkey" else "qkey")
-        if (key.isBlank()) throw Exception("Add your ${if (pu) "Puter" else if (gem) "Gemini" else "Qwen"} key in ⚙ Settings → Keys & models")
-        val base = if (pu) "https://api.puter.com/puterai/openai/v1" else if (gem) Api.GEMINI_BASE else st.get("qbase", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-        val model = if (pu) (if (cmode == "coding") st.get("pcmodel", "gpt-5.4-nano") else st.get("pmodel", "gpt-5.4-nano"))
-        else if (gem) st.get("gmodel", "gemini-2.5-flash")
-        else if (cmode == "coding") st.get("cmodel", "qwen3-coder-plus") else st.get("qmodel", "qwen-plus")
-        return Api.chat(base, key, model, msgs, tools)
+    private fun modelFor(p: String, img: Boolean): String = when (p) {
+        "groq" -> if (img) st.get("grvmodel", "meta-llama/llama-4-scout-17b-16e-instruct")
+        else if (cmode == "coding") st.get("grcmodel", "moonshotai/kimi-k2-instruct-0905") else st.get("grmodel", "openai/gpt-oss-120b")
+        "gemini" -> st.get("gmodel", "gemini-2.5-flash")
+        else -> if (cmode == "coding") st.get("cmodel", "qwen3-coder-plus") else st.get("qmodel", "qwen-plus")
+    }
+
+    private fun baseFor(p: String) = when (p) {
+        "groq" -> Api.GROQ_BASE
+        "gemini" -> Api.GEMINI_BASE
+        else -> st.get("qbase", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+    }
+
+    private fun call(p: String, msgs: JSONArray, tools: JSONArray?, img: Boolean): JSONObject {
+        val key = st.get(provKey(p))
+        if (key.isBlank()) throw Exception("Add an API key first: Settings, API keys.")
+        return Api.chat(baseFor(p), key, modelFor(p, img), msgs, tools) { w -> runOnUiThread { stepLine(w) } }
     }
 
     private fun sysPrompt(spoken: Boolean): String {
@@ -758,39 +1331,38 @@ class MainActivity : Activity() {
         val pName = st.get("persona", "Friendly")
         val persona = personas[pName] ?: personas.getValue("Friendly")
         val who = if (st.get("method") == "guest") "" else "The user is ${st.get("name")} (${st.get("email")})."
-        val modeBlock = if (cmode == "coding") """CODING MODE: you are a senior software engineer.
-- Before building ANY app or project, call web_search at least twice (current library versions, official docs, best practice for what was asked) and fetch_url the best page. Then build.
-- Write complete, working files. No TODO placeholders, no cut-off code. Re-read your code for compile errors before zipping, because you cannot compile here.
-- Pick the project and file names yourself and keep the structure clean (README.txt included)."""
-        else """AGENT MODE: you are a general assistant. Chat normally about anything, use tools only when they help. For big coding jobs you can still build them, but Coding mode is better at it."""
-        return """You are 14AI, a personal AI agent living inside an Android app. Today is $day. $who
-PERSONALITY ($pName): $persona Stay in this personality always, but never let it make you less accurate or less useful.
+        val modeBlock = if (cmode == "coding") """CODING MODE. You are a senior software engineer. Work like this:
+1. For anything non-trivial, web_search the current docs and library versions first and fetch_url the best page.
+2. Say your file list in one short sentence, then write EVERY file completely. No TODO, no placeholders, no cut-off code.
+3. Android defaults that are known to build: Gradle 8.7 on JDK 17 (CI provides them), AGP 8.5.2, Kotlin 1.9.24, compileSdk 34, minSdk 26. Include settings.gradle.kts, build.gradle.kts, app/build.gradle.kts, AndroidManifest.xml, gradle.properties and README.txt.
+4. Before packing, read_file your main files and check imports, names, types and that every referenced resource exists. Fix problems, then pack.
+5. Keep code simple and standard. Prefer plain APIs you are sure about over clever ones."""
+        else "AGENT MODE. You are a general assistant. Chat normally about anything and use tools only when they help."
+        val mem = if (cap("mem")) "MEMORY: memory.md holds lasting facts about the user. When you learn something lasting (name, preferences, projects, goals) call memory_save. Use memory_forget when asked to forget. Current memory:\n${st.memory().ifBlank { "(empty)" }.takeLast(4000)}" else ""
+        return """You are 14AI, a capable personal AI agent inside an Android app. Today is $day. $who
+PERSONALITY ($pName): $persona Never use emojis. Stay in character but never be less accurate or useful.
 $modeBlock
-You own a private sandbox folder and tools. When the user wants a file (code, image, document, archive, anything), CREATE it with tools, then say briefly what you made. The app shows nice file cards (thumbnail, share and download buttons) for created files automatically, so never paste whole files into chat.
-WEB: you can search the internet with web_search(query) and read pages with fetch_url(url). Use them whenever facts may be recent or you are unsure: news, versions, prices, docs, people, sports, anything the user asks you to look up. Search first, read the best results, then answer. Mention source names briefly, no long URL dumps.
-FILE NAMES: YOU always choose every file name yourself: short, clear, descriptive, lowercase with underscores (home_dashboard.png, budget_report.pdf, Calculator_v1.0.zip). Never ask the user what to call a file and never use generic names like output.png or file1.
-How to make formats:
-- Text formats (.kt .java .xml .json .html .css .js .py .md .csv .svg .yaml .gradle ...): write_file.
-- Images (.png .jpg .webp): DRAW them with run_python using Pillow (PIL) and numpy, saving into the sandbox (gradients, shapes, text, patterns, charts, filters). Fonts: ImageFont.truetype('/system/fonts/Roboto-Regular.ttf', size) with ImageFont.load_default() as fallback. You can also use HTML/SVG + render_html_to_image (best for UI mockups, 1280x800), or generate_image for photo-style art.
-- PDF: make_pdf for plain text, or build HTML and render it to an image.
-- Office files (.docx .xlsx .pptx), .epub, .jar, .zip: write the internal XML/files with write_file, then zip_folder with the right extension.
-- Android projects (DELIVERY RULE): build the project as a normal folder (app/src/main/..., build.gradle.kts, settings.gradle.kts, gradle.properties, README.txt) in ONE sandbox folder, then call flat_zip(folder, output). It makes the FLAT zip for you: no folders at all, every file at the zip root, plus a build.yml that sorts the files back into Android folders on GitHub Actions. NEVER use zip_folder for Android projects and never write build.yml yourself. Name the zip like ProjectName_v1.0.zip. Add mockup PNG screens when asked.
-- Other small binaries: write_base64.
-run_python runs real Python 3.12 with only Pillow and numpy (no internet, no pip, avoid infinite loops). You cannot compile Kotlin/Java; be honest about that.
-STYLE: the chat shows plain text, so do not use markdown symbols (no **, no #, no backticks). Short paragraphs, dashes for lists.
-MEMORY: memory.md holds lasting facts about the user. When you learn something lasting (name, preferences, projects, goals), call memory_save. Use memory_forget when asked to forget. Current memory:
-${st.memory().ifBlank { "(empty)" }.takeLast(6000)}
+TOOLS: you own a private sandbox. When the user wants a file (code, image, document, archive), CREATE it with tools, then say briefly what you made. The app shows file cards automatically, so never paste whole files into chat.
+FILE NAMES: you always choose short, clear, lowercase_with_underscores names (home_dashboard.png, budget_report.pdf, Calculator_v1.0.zip). Never ask the user what to call a file.
+WEB: use web_search and fetch_url when facts may be recent or you are unsure (versions, docs, news, prices). Search first, read the best result, then answer and name your sources briefly.
+FORMATS: text files with write_file. Images: draw with run_python (Pillow, numpy; fonts ImageFont.truetype('/system/fonts/Roboto-Regular.ttf', size) with load_default as fallback), or write HTML/SVG then render_html_to_image (UI mockups at 1280x800), or generate_image for photo-style art. PDF: make_pdf. Office files, epub, jar, zip: write the inner files then zip_folder with the right extension. Android projects: build the normal folder in ONE sandbox folder then call flat_zip(folder, output). Never zip_folder an Android project and never write build.yml yourself. Name it ProjectName_v1.0.zip.
+run_python is Python 3.12 with only Pillow and numpy, no internet. You cannot compile Kotlin or Java.
+STYLE: light markdown is fine: **bold**, `code`, - bullets and fenced code blocks. No tables. Short paragraphs.
+$mem
 Reply in the user's language.
-${if (spoken) "LIVE VOICE MODE: your reply is spoken aloud. Use short natural sentences, no markdown, no code, no emojis. Think first, then answer briefly." else ""}
+${if (spoken) "LIVE VOICE MODE: your reply is spoken aloud. Use short natural sentences, no markdown, no code, no emojis." else ""}
 ${st.get("custom")}"""
     }
 
-    private fun userMsg(text: String, atts: List<File>): JSONObject {
+    private fun userMsg(text: String, atts: List<File>, maxImgs: Int): JSONObject {
         var t = text
         val imgs = mutableListOf<JSONObject>()
         atts.forEach { f ->
             val r = sb.rel(f)
-            if (isImg(f)) { imgs.add(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", dataUri(f)))); t += "\n[attached image: $r]" }
+            if (isImg(f)) {
+                if (imgs.size < maxImgs) { imgs.add(JSONObject().put("type", "image_url").put("image_url", JSONObject().put("url", dataUri(f)))); t += "\n[attached image: $r]" }
+                else t += "\n[attached image saved at $r, not shown to you because of the image limit]"
+            }
             else if (f.extension.lowercase() in textExt && f.length() < 200000) t += "\n[attached file: $r]\n" + f.readText().take(12000)
             else t += "\n[attached file saved at $r. Use tools to read or unzip it]"
         }
@@ -805,45 +1377,58 @@ ${st.get("custom")}"""
         val bo = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(f.path, bo)
         var s = 1
-        while (maxOf(bo.outWidth, bo.outHeight) / s > 1280) s *= 2
+        while (maxOf(bo.outWidth, bo.outHeight) / s > 1024) s *= 2
         val bm = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = s })
         val out = ByteArrayOutputStream()
-        bm.compress(Bitmap.CompressFormat.JPEG, 80, out)
+        bm.compress(Bitmap.CompressFormat.JPEG, 78, out)
         return "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 
     private suspend fun agent(text: String, atts: List<File>, spoken: Boolean, hist: List<Pair<String, String>>): String {
         sb.produced.clear()
-        val prov = pick(atts.any { isImg(it) })
+        val hasImg = atts.any { isImg(it) }
+        val prov = pickProv()
         val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sysPrompt(spoken)))
         hist.forEach { msgs.put(JSONObject().put("role", if (it.first == "user") "user" else "assistant").put("content", it.second)) }
-        msgs.put(userMsg(text, atts))
+        msgs.put(userMsg(text, atts, if (prov == "groq") 5 else 10))
+        val tools = Sandbox.specs(cap("web"), cap("py"), cap("img"), cap("mem"))
         var answer = ""
         var finished = false
+        var bad = 0
         val maxSteps = if (cmode == "coding") 30 else 18
         for (step in 1..maxSteps) {
-            val m = call(prov, msgs, Sandbox.specs())
+            val m = try {
+                call(prov, msgs, tools, hasImg)
+            } catch (e: HttpErr) {
+                if (e.code == 400 && (e.message ?: "").contains("tool_use_failed") && bad < 2) {
+                    bad++
+                    msgs.put(JSONObject().put("role", "user").put("content", "Your last tool call was malformed. Call the tool again with valid JSON arguments."))
+                    continue
+                }
+                throw e
+            }
             val calls = m.optJSONArray("tool_calls")
             val content = if (m.isNull("content")) "" else m.optString("content")
             if (calls == null || calls.length() == 0) { answer = content; finished = true; break }
             msgs.put(if (prov == "gemini") m else JSONObject().put("role", "assistant").put("content", content).put("tool_calls", calls))
             for (i in 0 until calls.length()) {
                 val c = calls.getJSONObject(i); val fn = c.getJSONObject("function")
-                val args = JSONObject(fn.optString("arguments").ifBlank { "{}" })
+                val args = try { JSONObject(fn.optString("arguments").ifBlank { "{}" }) } catch (e: Exception) { JSONObject() }
                 val nm = fn.getString("name")
                 val label = when (nm) {
-                    "web_search" -> "🔎 searching: ${args.optString("query")}"
-                    "fetch_url" -> "🌐 reading ${args.optString("url").take(60)}"
-                    "run_python" -> "🐍 running python"
-                    else -> "🔧 $nm ${args.optString("path", args.optString("output", ""))}"
+                    "web_search" -> "Searching: ${args.optString("query")}"
+                    "fetch_url" -> "Reading ${args.optString("url").take(60)}"
+                    "run_python" -> "Running Python"
+                    "flat_zip" -> "Packing ${args.optString("output")}"
+                    else -> "$nm ${args.optString("path", args.optString("output", ""))}".trim()
                 }
-                withContext(Dispatchers.Main) { addBubble("note", label, false); if (live) liveSub?.text = label }
+                withContext(Dispatchers.Main) { stepLine(label); if (live) liveSub?.text = label }
                 val res = sb.run(nm, args)
                 msgs.put(JSONObject().put("role", "tool").put("tool_call_id", c.optString("id")).put("content", res.take(8000)))
             }
         }
-        if (!finished) answer = "I hit my step limit. Check 📁 to see what I made so far, then tell me to continue."
-        if (answer.isBlank()) answer = "Done ✅"
+        if (!finished) answer = "I hit my step limit. Open Files to see what I made so far, then tell me to continue."
+        if (answer.isBlank()) answer = "Done."
         return answer
     }
 }

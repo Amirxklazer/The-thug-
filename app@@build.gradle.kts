@@ -10,8 +10,8 @@ android {
         applicationId = "com.amir.ai14"
         minSdk = 26
         targetSdk = 34
-        versionCode = 6
-        versionName = "2.4.1"
+        versionCode = 7
+        versionName = "3.0.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     signingConfigs {
@@ -44,4 +44,5 @@ chaquopy {
 }
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("androidx.core:core:1.13.1")
 }

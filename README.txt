@@ -1,6 +1,13 @@
-14AI v2.4.1  (FLAT zip: no folders)
-1. On GitHub create a repo. Upload ALL files from this zip to the repo root (no folders needed).
-2. Create the workflow: Add file -> Create new file, name it  .github/workflows/build.yml  and paste the contents of build.yml (the upload of build.yml alone won't run).
-3. Actions tab -> Build APK -> run -> download app-debug-apk.
-build.yml sorts files named like app@@src@@main@@... back into folders before building.
-4. Open the app, sign in (email or guest), paste your Puter token (puter.com/dashboard) or a Gemini/Qwen key.
+14AI v3.0.0
+
+1. Upload every file in this zip to the root of your GitHub repo (flat, no folders).
+2. Move build.yml to .github/workflows/build.yml (same as before).
+3. Run the Build APK workflow, download the app-debug-apk artifact, install.
+
+What's new in 3.0.0
+- New Claude-style UI: black and orange, square corners everywhere, SVG icons (no emojis), side drawer, bottom sheets, settings screen with Light / Dark / System.
+- Groq support (best for coding). Paste your key under Settings > API keys. Puter removed.
+- Paste many images: Photos picker, Camera, Paste button, long-press paste, keyboard image insert.
+- File cards with thumbnails, preview, download and share.
+- Markdown rendering with copy buttons on code blocks.
+- New app icon and logo.
