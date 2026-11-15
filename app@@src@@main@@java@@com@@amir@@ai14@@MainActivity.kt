@@ -305,7 +305,7 @@ class MainActivity : Activity() {
         ui.clear(); pending.clear(); cmode = ""
         buildMain()
         newChat()
-        if (st.get("grkey").isBlank() && st.get("gkey").isBlank() && st.get("qkey").isBlank()) keysPage { backToMain() }
+        if (provNames.keys.none { st.get(provKey(it)).isNotBlank() }) keysPage { backToMain() }
     }
 
     private fun enter(uid: String, email: String, name: String, method: String) {
@@ -513,8 +513,8 @@ class MainActivity : Activity() {
         opt(col, "Agent", "Chat, search the web, make files, images and PDFs", cmode != "coding") { setMode("agent"); close() }
         opt(col, "Coding", "Research first, then build complete projects", cmode == "coding") { setMode("coding"); close() }
         col.addView(tv("Provider", 15f, C.sub).apply { setPadding(0, dp(14), 0, dp(6)) })
-        listOf("Auto", "Groq", "Gemini", "Qwen").forEach { p ->
-            opt(col, p, when (p) { "Auto" -> "Groq first, then Gemini, then Qwen"; "Groq" -> "Fast open models. Best for coding"; "Gemini" -> "Google Gemini"; else -> "Alibaba Qwen" }, st.get("prov", "Auto") == p) { st.put("prov", p); updChip(); close() }
+        provChoices.forEach { p ->
+            opt(col, p, when (p) { "Auto" -> "Tries your keys in order and switches when one is busy"; "Groq" -> "Fast open models. Best for coding"; "OpenRouter" -> "Many free models on one key"; "Mistral" -> "Mistral and Codestral"; "Gemini" -> "Google Gemini"; "Cerebras" -> "Very fast gpt-oss"; else -> "Alibaba Qwen" }, st.get("prov", "Auto") == p) { st.put("prov", p); updChip(); close() }
         }
     }
 
@@ -799,12 +799,13 @@ class MainActivity : Activity() {
         if (!t.isNullOrBlank()) et.setText(t) else toast("Clipboard is empty")
     }
 
-    private fun formPage(title: String, items: List<Triple<String, String, String>>, note: String? = null, multi: Set<String> = emptySet(), header: ((LinearLayout) -> Unit)? = null, back: () -> Unit) {
+    private fun formPage(title: String, items: List<Triple<String, String, String>>, note: String? = null, multi: Set<String> = emptySet(), header: ((LinearLayout) -> Unit)? = null, links: Map<String, String> = emptyMap(), back: () -> Unit) {
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(28)) }
         if (note != null) body.addView(tv(note, 14f, C.sub).apply { setPadding(0, 0, 0, dp(6)) })
         header?.invoke(body)
         val ets = items.map { (k, l, d) ->
-            body.addView(tv(l, 13f, C.sub).apply { setPadding(0, dp(14), 0, dp(6)) })
+            body.addView(tv(l, 13f, C.sub).apply { setPadding(0, dp(14), 0, dp(4)) })
+            links[k]?.let { u -> body.addView(tv("Get a key: $u", 13f, C.accent).apply { setPadding(0, 0, 0, dp(6)); onTap { openUrl(u) } }) }
             val et = EditText(this).apply {
                 setText(st.get(k, "")); hint = d; setTextColor(C.text); setHintTextColor(C.hint); background = null; textSize = 15f
                 setPadding(dp(12), dp(10), dp(8), dp(10))
@@ -825,21 +826,32 @@ class MainActivity : Activity() {
     }
 
     private fun keysSummary(): String {
-        val n = mutableListOf<String>()
-        if (st.get("grkey").isNotBlank()) n.add("Groq")
-        if (st.get("gkey").isNotBlank()) n.add("Gemini")
-        if (st.get("qkey").isNotBlank()) n.add("Qwen")
+        val n = provNames.filter { st.get(provKey(it.key)).isNotBlank() }.values
         return if (n.isEmpty()) "No key yet" else n.joinToString(", ")
     }
 
-    private fun keysPage(back: () -> Unit) = formPage(
+    private fun openUrl(u: String) {
+        try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://$u"))) } catch (e: Exception) { toast("Open $u in your browser") }
+    }
+
+    private fun keysPage(back: () -> Unit): Unit = formPage(
         "API keys",
         listOf(
-            Triple("grkey", "Groq API key (recommended)", "gsk_..."),
-            Triple("gkey", "Gemini API key (optional)", "AIza..."),
-            Triple("qkey", "Qwen API key (optional)", "sk-...")
+            Triple("grkey", "Groq key. Free, no card. Best for coding", "gsk_..."),
+            Triple("orkey", "OpenRouter key. Free, no card. Many models", "sk-or-..."),
+            Triple("mskey", "Mistral key. Free, phone check, no card", "..."),
+            Triple("gkey", "Gemini key. Free, small limits", "AIza..."),
+            Triple("cekey", "Cerebras key. Needs a payment card", "csk-..."),
+            Triple("qkey", "Qwen key (Alibaba Model Studio, Singapore)", "sk-...")
         ),
-        "Tap the paste button next to a field to paste from your clipboard. One key is enough.\nGroq: console.groq.com/keys\nGemini: aistudio.google.com/apikey",
+        "One key is enough. Add more and 14AI switches to the next one automatically when one is busy or rate-limited. Tap the clipboard button to paste.",
+        links = mapOf(
+            "grkey" to "console.groq.com/keys",
+            "orkey" to "openrouter.ai/keys",
+            "mskey" to "console.mistral.ai/api-keys",
+            "gkey" to "aistudio.google.com/apikey",
+            "cekey" to "cloud.cerebras.ai"
+        ),
         back = back
     )
 
@@ -849,17 +861,22 @@ class MainActivity : Activity() {
             Triple("grmodel", "Groq model, Agent", "openai/gpt-oss-120b"),
             Triple("grcmodel", "Groq model, Coding", "moonshotai/kimi-k2-instruct-0905"),
             Triple("grvmodel", "Groq model, images", "meta-llama/llama-4-scout-17b-16e-instruct"),
+            Triple("ormodel", "OpenRouter model, Agent", "openai/gpt-oss-120b:free"),
+            Triple("orcmodel", "OpenRouter model, Coding", "qwen/qwen3-coder:free"),
+            Triple("msmodel", "Mistral model, Agent", "mistral-small-latest"),
+            Triple("mscmodel", "Mistral model, Coding", "codestral-latest"),
+            Triple("cemodel", "Cerebras model", "gpt-oss-120b"),
             Triple("gmodel", "Gemini model", "gemini-2.5-flash"),
             Triple("qmodel", "Qwen model, Agent", "qwen-plus"),
             Triple("cmodel", "Qwen model, Coding", "qwen3-coder-plus"),
             Triple("qbase", "Qwen base URL", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
             Triple("imodel", "Image model (Gemini)", "gemini-2.5-flash-image")
         ),
-        "Leave a field empty to use its default. If a model stops working, paste a newer model name here.",
+        "Leave a field empty to use its default. Free models on OpenRouter change often, so if one stops working paste another name that ends in :free.",
         header = { body ->
             body.addView(row("ic_model", "AI provider", st.get("prov", "Auto")) {
                 sheet("Provider") { col, close ->
-                    listOf("Auto", "Groq", "Gemini", "Qwen").forEach { p -> opt(col, p, null, st.get("prov", "Auto") == p) { st.put("prov", p); close(); modelsPage() } }
+                    provChoices.forEach { p -> opt(col, p, null, st.get("prov", "Auto") == p) { st.put("prov", p); close(); modelsPage() } }
                 }
             })
         },
@@ -1295,35 +1312,70 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun provKey(p: String) = when (p) { "groq" -> "grkey"; "gemini" -> "gkey"; else -> "qkey" }
+    private val provNames = linkedMapOf("groq" to "Groq", "openrouter" to "OpenRouter", "mistral" to "Mistral", "gemini" to "Gemini", "cerebras" to "Cerebras", "qwen" to "Qwen")
+    private val provChoices = listOf("Auto", "Groq", "OpenRouter", "Mistral", "Gemini", "Cerebras", "Qwen")
 
-    private fun pickProv(): String {
-        val order = when (st.get("prov", "Auto")) {
-            "Groq" -> listOf("groq", "gemini", "qwen")
-            "Gemini" -> listOf("gemini", "groq", "qwen")
-            "Qwen" -> listOf("qwen", "groq", "gemini")
-            else -> listOf("groq", "gemini", "qwen")
-        }
-        return order.firstOrNull { st.get(provKey(it)).isNotBlank() } ?: order[0]
+    private fun provKey(p: String) = when (p) {
+        "groq" -> "grkey"; "openrouter" -> "orkey"; "mistral" -> "mskey"; "gemini" -> "gkey"; "cerebras" -> "cekey"; else -> "qkey"
     }
+
+    /** Providers to try, in order. Only ones with a key; images only go to vision-capable ones. */
+    private fun provOrder(img: Boolean): List<String> {
+        val pref = st.get("prov", "Auto").lowercase()
+        val base = provNames.keys.toList()
+        var order = if (pref in base) listOf(pref) + base.filter { it != pref } else base
+        if (img) order = order.filter { it in setOf("groq", "gemini", "mistral") }.ifEmpty { order }
+        val keyed = order.filter { st.get(provKey(it)).isNotBlank() }
+        return keyed.ifEmpty { order.take(1) }
+    }
+
+    private fun pickProv(): String = provOrder(false).first()
 
     private fun modelFor(p: String, img: Boolean): String = when (p) {
         "groq" -> if (img) st.get("grvmodel", "meta-llama/llama-4-scout-17b-16e-instruct")
         else if (cmode == "coding") st.get("grcmodel", "moonshotai/kimi-k2-instruct-0905") else st.get("grmodel", "openai/gpt-oss-120b")
+        "openrouter" -> if (cmode == "coding") st.get("orcmodel", "qwen/qwen3-coder:free") else st.get("ormodel", "openai/gpt-oss-120b:free")
+        "mistral" -> if (cmode == "coding" && !img) st.get("mscmodel", "codestral-latest") else st.get("msmodel", "mistral-small-latest")
+        "cerebras" -> st.get("cemodel", "gpt-oss-120b")
         "gemini" -> st.get("gmodel", "gemini-2.5-flash")
         else -> if (cmode == "coding") st.get("cmodel", "qwen3-coder-plus") else st.get("qmodel", "qwen-plus")
     }
 
     private fun baseFor(p: String) = when (p) {
         "groq" -> Api.GROQ_BASE
+        "openrouter" -> Api.OPENROUTER_BASE
+        "mistral" -> Api.MISTRAL_BASE
+        "cerebras" -> Api.CEREBRAS_BASE
         "gemini" -> Api.GEMINI_BASE
         else -> st.get("qbase", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
     }
 
-    private fun call(p: String, msgs: JSONArray, tools: JSONArray?, img: Boolean): JSONObject {
-        val key = st.get(provKey(p))
-        if (key.isBlank()) throw Exception("Add an API key first: Settings, API keys.")
-        return Api.chat(baseFor(p), key, modelFor(p, img), msgs, tools) { w -> runOnUiThread { stepLine(w) } }
+    private fun why(e: Exception): String = if (e is HttpErr) when {
+        e.code == 429 -> "rate limit"
+        e.code == 401 || e.code == 403 -> "key rejected"
+        e.code == 404 -> "model not found"
+        e.code == 413 -> "request too big"
+        e.code >= 500 -> "server busy"
+        else -> "error ${e.code}"
+    } else "no connection"
+
+    /** Calls the first provider that works. Falls back to the next one on rate limits, busy servers or bad keys. */
+    private fun call(msgs: JSONArray, tools: JSONArray?, img: Boolean): Pair<String, JSONObject> {
+        val order = provOrder(img)
+        var last: Exception? = null
+        for ((i, p) in order.withIndex()) {
+            val key = st.get(provKey(p))
+            if (key.isBlank()) { last = Exception("Add an API key first: Settings, API keys."); continue }
+            val isLast = i == order.size - 1
+            try {
+                val m = Api.chat(baseFor(p), key, modelFor(p, img), msgs, tools, if (isLast) 3 else 0) { w -> runOnUiThread { stepLine("${provNames[p]}: $w") } }
+                return p to m
+            } catch (e: Exception) {
+                last = e
+                if (!isLast) runOnUiThread { stepLine("${provNames[p]} is ${why(e)}, trying ${provNames[order[i + 1]]}") }
+            }
+        }
+        throw last ?: Exception("No AI provider available")
     }
 
     private fun sysPrompt(spoken: Boolean): String {
@@ -1387,18 +1439,18 @@ ${st.get("custom")}"""
     private suspend fun agent(text: String, atts: List<File>, spoken: Boolean, hist: List<Pair<String, String>>): String {
         sb.produced.clear()
         val hasImg = atts.any { isImg(it) }
-        val prov = pickProv()
         val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sysPrompt(spoken)))
         hist.forEach { msgs.put(JSONObject().put("role", if (it.first == "user") "user" else "assistant").put("content", it.second)) }
-        msgs.put(userMsg(text, atts, if (prov == "groq") 5 else 10))
+        msgs.put(userMsg(text, atts, 5))
         val tools = Sandbox.specs(cap("web"), cap("py"), cap("img"), cap("mem"))
         var answer = ""
         var finished = false
         var bad = 0
         val maxSteps = if (cmode == "coding") 30 else 18
         for (step in 1..maxSteps) {
+            val used: String
             val m = try {
-                call(prov, msgs, tools, hasImg)
+                val r = call(msgs, tools, hasImg); used = r.first; r.second
             } catch (e: HttpErr) {
                 if (e.code == 400 && (e.message ?: "").contains("tool_use_failed") && bad < 2) {
                     bad++
@@ -1410,7 +1462,9 @@ ${st.get("custom")}"""
             val calls = m.optJSONArray("tool_calls")
             val content = if (m.isNull("content")) "" else m.optString("content")
             if (calls == null || calls.length() == 0) { answer = content; finished = true; break }
-            msgs.put(if (prov == "gemini") m else JSONObject().put("role", "assistant").put("content", content).put("tool_calls", calls))
+            val keep = JSONArray(calls.toString())
+            if (used != "gemini") for (j in 0 until keep.length()) keep.getJSONObject(j).remove("extra_content")
+            msgs.put(JSONObject().put("role", "assistant").put("content", content).put("tool_calls", keep))
             for (i in 0 until calls.length()) {
                 val c = calls.getJSONObject(i); val fn = c.getJSONObject("function")
                 val args = try { JSONObject(fn.optString("arguments").ifBlank { "{}" }) } catch (e: Exception) { JSONObject() }

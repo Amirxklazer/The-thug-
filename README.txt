@@ -1,13 +1,18 @@
-14AI v3.0.0
+14AI v3.1.0
 
 1. Upload every file in this zip to the root of your GitHub repo (flat, no folders).
 2. Move build.yml to .github/workflows/build.yml (same as before).
 3. Run the Build APK workflow, download the app-debug-apk artifact, install.
 
-What's new in 3.0.0
-- New Claude-style UI: black and orange, square corners everywhere, SVG icons (no emojis), side drawer, bottom sheets, settings screen with Light / Dark / System.
-- Groq support (best for coding). Paste your key under Settings > API keys. Puter removed.
-- Paste many images: Photos picker, Camera, Paste button, long-press paste, keyboard image insert.
-- File cards with thumbnails, preview, download and share.
-- Markdown rendering with copy buttons on code blocks.
-- New app icon and logo.
+What's new in 3.1.0
+- New providers: OpenRouter, Mistral and Cerebras (plus Groq, Gemini, Qwen).
+- Automatic fallback: when a provider is rate-limited, busy or its key is rejected, 14AI switches to the next provider with a key.
+- Each API key field has a "Get a key" link and a paste button (Settings > API keys).
+- Clearer messages: "Groq is rate limit, trying OpenRouter".
+
+Where to get keys
+- Groq: console.groq.com/keys (free, no card)
+- OpenRouter: openrouter.ai/keys (free, no card)
+- Mistral: console.mistral.ai/api-keys (free, phone check, no card)
+- Gemini: aistudio.google.com/apikey
+- Cerebras: cloud.cerebras.ai (needs a payment card)

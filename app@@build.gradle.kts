@@ -10,8 +10,8 @@ android {
         applicationId = "com.amir.ai14"
         minSdk = 26
         targetSdk = 34
-        versionCode = 7
-        versionName = "3.0.0"
+        versionCode = 8
+        versionName = "3.1.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     signingConfigs {

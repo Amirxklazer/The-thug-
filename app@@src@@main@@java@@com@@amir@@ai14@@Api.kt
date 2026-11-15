@@ -11,6 +11,9 @@ class HttpErr(val code: Int, val retry: Int, msg: String) : Exception(msg)
 object Api {
     const val GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
     const val GROQ_BASE = "https://api.groq.com/openai/v1"
+    const val CEREBRAS_BASE = "https://api.cerebras.ai/v1"
+    const val OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+    const val MISTRAL_BASE = "https://api.mistral.ai/v1"
 
     private fun post(url: String, key: String?, body: JSONObject): JSONObject {
         val c = URL(url).openConnection() as HttpURLConnection
@@ -41,7 +44,7 @@ object Api {
     }
 
     /** OpenAI-compatible chat (Groq, Gemini and Qwen all speak this). Retries rate limits. */
-    fun chat(base: String, key: String, model: String, msgs: JSONArray, tools: JSONArray?, onWait: (String) -> Unit = {}): JSONObject {
+    fun chat(base: String, key: String, model: String, msgs: JSONArray, tools: JSONArray?, retries: Int = 3, onWait: (String) -> Unit = {}): JSONObject {
         var attempt = 0
         while (true) {
             try {
@@ -50,7 +53,7 @@ object Api {
                 val r = post(base.trimEnd('/') + "/chat/completions", key, b)
                 return r.getJSONArray("choices").getJSONObject(0).getJSONObject("message")
             } catch (e: HttpErr) {
-                if ((e.code == 429 || e.code >= 500) && attempt < 3) {
+                if ((e.code == 429 || e.code >= 500) && attempt < retries) {
                     attempt++
                     val w = (if (e.retry > 0) e.retry else 6 * attempt).coerceIn(2, 30)
                     onWait("Busy, retrying in ${w}s")
